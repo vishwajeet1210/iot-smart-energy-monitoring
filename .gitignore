@@ -3,3 +3,6 @@
 .pytest_cache/
 .venv/
 venv/
+
+# CIAP report materials
+REPORT_MATERIALS/
