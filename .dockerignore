@@ -1,0 +1,45 @@
+# Version Control
+.git
+.gitignore
+
+# Python Cache & Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Test Suite & Reports
+tests/
+REPORT_MATERIALS/
+results.xml
+coverage.xml
+.coverage
+htmlcov/
+
+# Infrastructure as Code & Cloud Configs
+terraform/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform.lock.hcl
+
+# Security & Scan Artifacts
+security/
+trivy-*.json
+trivy-*.sarif
+trivy-*.txt
+
+# Local Data & SQLite files
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# IDE & OS Metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

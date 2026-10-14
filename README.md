@@ -1,42 +1,56 @@
 # ⚡ IoT-Based Smart Energy Monitoring and Management System
 
-> **SEP CIAP Micro Project** — Requirements Analysis of an IoT-Based Smart Energy Monitoring System
+> **DevSecOps Lab & SEP CIAP Micro Project**
+> **Topic:** Requirements Analysis, Security Hardening, and Automated CI/CD for an IoT-Based Smart Energy Monitoring System
+> **Repository:** [https://github.com/vishwajeet1210/iot-smart-energy-monitoring](https://github.com/vishwajeet1210/iot-smart-energy-monitoring)
 
-A web-based Smart Energy Monitoring and Management System that simulates an IoT-enabled smart energy monitoring environment. The system demonstrates the complete IoT data pipeline from sensor simulation through analytics to actionable alerts and recommendations.
+A web-based Smart Energy Monitoring and Management System simulating an IoT-enabled telemetry environment. Demonstrates the complete pipeline: sensor simulation → SQLite persistence → analytics engine → real-time Streamlit dashboard, fully hardened with a complete **DevSecOps lifecycle** (SAST, SCA, Container Security, CI/CD with Jenkins, and Infrastructure as Code with Terraform on AWS).
 
 ---
 
-## 🏗️ System Architecture
+## 🏗️ System & DevSecOps Architecture
 
+### 1. Application Data Pipeline
 ```
 ┌─────────────────────────────┐
-│   IoT Sensor Simulation     │  ← iot_simulator.py
-│   (6 Smart Energy Devices)  │
+│   IoT Sensor Simulation     │  ← iot_simulator.py (6 Smart Appliances)
 └─────────────┬───────────────┘
-              │ Voltage / Current / Power Data
+              │ Voltage / Current / Power Telemetry
               ▼
 ┌─────────────────────────────┐
-│   Data Processing Layer     │  ← analytics.py
-│   (Pandas / Aggregation)    │
+│   Data Processing Layer     │  ← analytics.py (Pandas Aggregation)
 └─────────────┬───────────────┘
               │
               ▼
 ┌─────────────────────────────┐
-│   Database Layer (SQLite)   │  ← database.py
-│   devices & readings tables │
+│   Database Layer (SQLite)   │  ← database.py (Repository pattern, WAL mode)
 └─────────────┬───────────────┘
               │
               ▼
 ┌─────────────────────────────┐
-│   Alert & Analytics Engine  │  ← alerts.py + analytics.py
-│   Threshold Detection       │
+│   Alert & Analytics Engine  │  ← alerts.py + analytics.py (Threshold Logic)
 └─────────────┬───────────────┘
               │
               ▼
 ┌─────────────────────────────┐
-│   Presentation Layer        │  ← app.py (Streamlit)
-│   Dashboard + Charts + UI   │
+│   Presentation Layer        │  ← app.py (Streamlit Web Dashboard)
 └─────────────────────────────┘
+```
+
+### 2. DevSecOps CI/CD & Cloud Pipeline
+```
+[ Developer / Git Push ]
+           │
+           ▼
+[ Jenkins Declarative Pipeline ]
+   ├─ Stage 1: Checkout SCM
+   ├─ Stage 2: Unit Testing (pytest + JUnit XML)
+   ├─ Stage 3: SAST Code Quality & Security (SonarQube Scanner & Quality Gate)
+   ├─ Stage 4: SCA Dependency Vulnerability Audit (Trivy fs -> JSON/SARIF)
+   ├─ Stage 5: Hardened Docker Container Build (python:3.12-slim, non-root appuser)
+   ├─ Stage 6: Container Image Security Scan (Trivy image -> JSON/SARIF)
+   ├─ Stage 7: Terraform IaC Linting & Validation (fmt check, validate)
+   └─ Stage 8: Production Deployment Gate (AWS EC2 / ECS with SSM & IMDSv2)
 ```
 
 ---
@@ -45,178 +59,277 @@ A web-based Smart Energy Monitoring and Management System that simulates an IoT-
 
 ```
 smart-energy-monitor/
+├── app.py                         # Streamlit web dashboard (Presentation Layer)
+├── config.py                      # Centralized configuration & environment variable overrides
+├── database.py                    # SQLite persistence layer (Repository pattern)
+├── iot_simulator.py               # IoT sensor simulation engine
+├── analytics.py                   # Energy calculations and time-series aggregation
+├── alerts.py                      # Dynamic threshold alerting & energy tips
+├── requirements.txt               # Production runtime Python dependencies
+├── requirements-dev.txt           # Development & testing dependencies (includes pytest)
+├── Dockerfile                     # Hardened container definition (non-root, health check, volume)
+├── .dockerignore                  # Docker build context exclusions
+├── Jenkinsfile                    # 10-stage declarative CI/CD pipeline
+├── sonar-project.properties       # SonarQube project analysis configuration
+├── .gitignore                     # Git tracking exclusions
+├── README.md                      # Comprehensive project & DevSecOps documentation
 │
-├── app.py               # Main Streamlit dashboard (Presentation Layer)
-├── config.py            # Centralized configuration (device specs, tariffs, thresholds)
-├── database.py          # SQLite database layer (Repository pattern)
-├── iot_simulator.py     # IoT sensor simulation engine
-├── analytics.py         # Energy analytics computations
-├── alerts.py            # Alert detection & recommendation engine
-├── requirements.txt     # Python dependencies
-├── README.md            # This file
+├── data/                          # SQLite persistent volume mount point
+│   └── energy.db                  # Local SQLite database (auto-generated at runtime)
 │
-├── data/
-│   └── energy.db        # SQLite database (auto-created at runtime)
+├── security/                      # DevSecOps security audit resources
+│   ├── vulnerability-report-template.md  # Standardized vulnerability & remediation report
+│   ├── trivy-scan.sh              # Trivy scanning automation for Linux/CI
+│   └── trivy-scan.ps1             # Trivy scanning automation for Windows PowerShell
+│
+├── terraform/                     # Infrastructure as Code (AWS deployment)
+│   ├── main.tf                    # VPC, Subnet, Security Group, IAM SSM role, EC2 instance
+│   ├── variables.tf               # Configurable infrastructure parameters
+│   ├── outputs.tf                 # Deployed instance IP, URL, and security IDs
+│   └── terraform.tfvars.example   # Sample input variable values
 │
 └── tests/
-    └── test_system.py   # Comprehensive automated test suite (pytest)
+    └── test_system.py             # 39 passing automated pytest unit tests
 ```
 
 ---
 
-## 🚀 Quick Start
+## 🚀 1. Local Run & Testing
 
 ### Prerequisites
-- Python 3.9 or higher
+- Python 3.9 – 3.13
+- Git
 
-### Installation
-
+### Installation & Run
 ```bash
-# Navigate to the project directory
-cd smart-energy-monitor
+# Clone repository
+git clone https://github.com/vishwajeet1210/iot-smart-energy-monitoring.git
+cd iot-smart-energy-monitoring
 
-# Install dependencies
-pip install -r requirements.txt
+# Create and activate virtual environment
+python -m venv .venv
+# Windows:
+.venv\Scripts\activate
+# Linux/macOS:
+source .venv/bin/activate
 
-# Run the application
+# Install production dependencies (or requirements-dev.txt for development & testing)
+pip install -r requirements-dev.txt
+
+# Launch Streamlit dashboard
 streamlit run app.py
 ```
+Access the dashboard in your browser at: **`http://localhost:8501`**
 
-The dashboard will open at `http://localhost:8501`.
+### Running Automated Test Suite
+```bash
+# Ensure test dependencies are installed
+pip install -r requirements-dev.txt
 
-### Running Tests
+# Run test suite
+pytest -v
+# Run with JUnit XML output for CI reporting
+pytest -v --junitxml=results.xml tests/
+```
+*Current test suite status: **39/39 PASS**.*
+
+---
+
+## 🐳 2. Docker Containerization & Security Hardening
+
+The application is packaged with a security-hardened container specification:
+- **Base Image:** `python:3.12-slim` (Official minimal Debian 13 Trixie base)
+- **Least Privilege:** Executes as unprivileged user `appuser` (UID `1001:1001`) with `/sbin/nologin`
+- **Persistence:** Declared volume at `/app/data` ensuring SQLite readings persist across container restarts
+- **Health Check:** Periodic polling of Streamlit's native health endpoint `http://localhost:8501/_stcore/health`
+- **Network:** Streamlit bound to `0.0.0.0:8501`
+
+### Build and Run Docker Container
 
 ```bash
-pytest tests/test_system.py -v
+# Build the production image
+docker build -t smart-energy-monitor:latest .
+
+# Run container with SQLite data volume mounted to local host
+# Linux / macOS:
+docker run -d \
+  --name smart-energy-monitor \
+  --restart unless-stopped \
+  -p 8501:8501 \
+  -v "$(pwd)/data:/app/data" \
+  smart-energy-monitor:latest
+
+# Windows PowerShell:
+docker run -d `
+  --name smart-energy-monitor `
+  --restart unless-stopped `
+  -p 8501:8501 `
+  -v "${PWD}/data:/app/data" `
+  smart-energy-monitor:latest
+```
+
+### Inspect Container Health & Logs
+```bash
+# Verify container is running and healthy
+docker ps --filter "name=smart-energy-monitor"
+
+# View logs
+docker logs -f smart-energy-monitor
 ```
 
 ---
 
-## ✨ Features
+## 🛡️ 3. Security Vulnerability Scanning (Trivy)
 
-### 1. Professional Dashboard
-- Real-time KPI metric cards (Power, Energy, Cost, Devices, Status)
-- Power trend chart with area fill
-- Device power distribution bar chart with threshold line
-- Active alerts preview
-- Device status table
+Trivy audits software dependencies, system packages, and Docker image layers.
 
-### 2. IoT Sensor Simulation
-Simulates 6 household IoT energy sensors:
+### Run Filesystem & Dependency Audit (SCA)
+```bash
+# Generate machine-readable JSON output
+trivy fs --severity HIGH,CRITICAL --format json -o security/trivy-fs-report.json .
 
-| Device | Location | Power Range |
-|--------|----------|-------------|
-| Air Conditioner | Living Room | 1100–1800 W |
-| Refrigerator | Kitchen | 150–350 W |
-| Washing Machine | Utility Room | 400–1000 W |
-| Desktop Computer | Study Room | 200–600 W |
-| LED Lighting | Hall | 20–100 W |
-| Water Heater | Bathroom | 1500–2000 W |
+# Generate human-readable console table
+trivy fs --severity HIGH,CRITICAL --format table .
+```
 
-Uses Gaussian noise around operating midpoints for realistic values.
+### Run Container Image Security Audit
+```bash
+# Scan local container image and output JSON
+trivy image --severity HIGH,CRITICAL --format json -o security/trivy-image-report.json smart-energy-monitor:latest
 
-### 3. Device Monitoring
-- Card-based device display with status indicators
-- Color-coded borders (green/amber/red)
-- Voltage, current, and power readings per device
-- Device specification reference table
+# Scan container image with console table
+trivy image --severity HIGH,CRITICAL --format table smart-energy-monitor:latest
+```
 
-### 4. Energy Analytics
-- Total Power Over Time (line chart)
-- Cumulative Energy Over Time (area chart)
-- Device Energy Breakdown (donut chart)
-- Device Power Comparison (horizontal bar chart)
-- Raw sensor data explorer
+### Automated Scripts
+- **Linux/CI:** `./security/trivy-scan.sh [image_name] [severity]`
+- **Windows:** `.\security\trivy-scan.ps1 -ImageName smart-energy-monitor:latest`
 
-### 5. Electricity Cost Estimation
-- Configurable tariff rate (₹/kWh) via sidebar
-- Real-time cost calculation
-- Visual cost display card
-
-### 6. High-Consumption Alerts
-- Configurable threshold (default: 1.20 kW)
-- Two severity levels: HIGH and CRITICAL
-- Visual alert cards with device details
-- Consumption vs threshold chart
-
-### 7. Energy-Saving Recommendations
-- Dynamic recommendations based on highest consumer
-- Multi-device threshold warnings
-- Low-usage device suggestions
-- Solar energy recommendations for high consumers
-- 5 general best-practice tips
-
-### 8. Persistent Database
-- SQLite with foreign key relationships
-- Auto-seeded historical data (2 hours)
-- Batch reading insertion
-- WAL mode for performance
+### Vulnerability Report Template
+Document and track all audit findings using the standardized template:
+📄 **[`security/vulnerability-report-template.md`](file:///C:/Users/Vishwajeet/.gemini/antigravity-ide/scratch/smart-energy-monitor/security/vulnerability-report-template.md)**
 
 ---
 
-## 🧪 Testing
+## 🔍 4. Static Code Analysis (SonarQube)
 
-The test suite (`tests/test_system.py`) covers 7 categories with 30+ test cases:
+Code quality, maintainability, and security smells are configured via `sonar-project.properties`.
 
-| Category | Tests | Description |
-|----------|-------|-------------|
-| IoT Simulator | 10 | Reading structure, value ranges, timestamps |
-| Energy Calculation | 5 | Power-to-energy conversion, aggregation |
-| Electricity Cost | 4 | Tariff multiplication, precision, edge cases |
-| Alert Detection | 6 | Threshold logic, severity levels, messages |
-| Database CRUD | 5 | Insert, retrieve, batch, clear, schema |
-| Analytics | 5 | Time-series, breakdowns, summaries |
-| Recommendations | 3 | Dynamic tips, solar trigger, base tips |
+### Server & Authentication Setup
+1. Launch SonarQube locally or via Docker:
+   ```bash
+   docker run -d --name sonarqube -p 9000:9000 sonarqube:lts-community
+   ```
+2. Log in to SonarQube at `http://localhost:9000` (default credentials: `admin` / `admin`).
+3. Generate an analysis token: **My Account** → **Security** → **Generate Token** (`SONAR_TOKEN`).
+4. Set the environment variable:
+   ```bash
+   # Linux/macOS
+   export SONAR_TOKEN="<your_generated_token>"
+   export SONAR_HOST_URL="http://localhost:9000"
 
----
+   # Windows PowerShell
+   $env:SONAR_TOKEN="<your_generated_token>"
+   $env:SONAR_HOST_URL="http://localhost:9000"
+   ```
 
-## 🔧 Configuration
-
-Key parameters in `config.py`:
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `DEFAULT_TARIFF_RATE` | ₹8/kWh | Electricity price |
-| `HIGH_CONSUMPTION_THRESHOLD_KW` | 1.20 kW | Alert threshold |
-| `READING_INTERVAL_SECONDS` | 5 s | Simulated sampling interval |
-
-All values are also adjustable through the sidebar UI at runtime.
-
----
-
-## 📐 Software Engineering Practices Demonstrated
-
-1. **Requirements Analysis** — Structured requirements → modular implementation
-2. **Modular Design** — 6 separate modules with clear responsibilities
-3. **Separation of Concerns** — Presentation, business logic, and data layers
-4. **Database Design** — Normalized schema with foreign keys and indexes
-5. **Automated Testing** — 30+ pytest test cases across all layers
-6. **Error Handling** — Graceful handling of empty data, invalid IDs, missing values
-7. **Maintainability** — Docstrings, type hints, configuration externalization
-8. **Usability** — Professional dark-theme dashboard with intuitive navigation
+### Execute Scanner
+```bash
+# Run SonarScanner CLI
+sonar-scanner \
+  -Dsonar.host.url="${SONAR_HOST_URL}" \
+  -Dsonar.token="${SONAR_TOKEN}"
+```
 
 ---
 
-## 📝 Technology Stack
+## ⚙️ 5. Jenkins Declarative CI/CD Pipeline
 
-| Component | Technology |
-|-----------|-----------|
-| Language | Python 3.9+ |
-| Web Framework | Streamlit |
-| Database | SQLite |
-| Data Processing | Pandas |
-| Visualization | Plotly |
-| Testing | pytest |
+The included `Jenkinsfile` provides an enterprise-ready pipeline executing on commit.
+
+### Required Jenkins Plugins
+1. **Pipeline** (Workflow Aggregator)
+2. **Git Plugin**
+3. **JUnit Plugin** (visualizes `results.xml`)
+4. **SonarQube Scanner Plugin**
+5. **Docker Pipeline Plugin**
+6. **Credentials Binding Plugin**
+
+### Pipeline Stages
+1. **Checkout SCM:** Pulls source code from GitHub repository.
+2. **Setup & Dependencies:** Installs Python virtual environment and dependencies.
+3. **Unit Tests & Coverage:** Runs 39 pytest tests and publishes JUnit test reports.
+4. **SonarQube Static Analysis:** Runs SAST scans using SonarScanner.
+5. **SonarQube Quality Gate:** Blocks pipeline if code smells or security gates fail.
+6. **Trivy Dependency Scan:** Audits dependencies and stores `trivy-fs-report.json`.
+7. **Docker Build:** Builds hardened container image with build number tags.
+8. **Trivy Image Scan:** Audits container image layers for CVEs before push.
+9. **Terraform IaC Validation:** Runs `terraform fmt` and `terraform validate`.
+10. **Deployment Gate:** Interactive approval gate for deployment to AWS Cloud.
 
 ---
 
-## ⚠️ Limitations
+## ☁️ 6. Infrastructure as Code (Terraform on AWS)
 
-- Sensor data is simulated (no real IoT hardware)
-- Data is stored locally (no cloud sync)
-- Single-user application (no authentication)
-- Cost estimation is approximate (single-rate tariff)
+The `terraform/` directory provides complete Infrastructure as Code for deploying the containerized monitoring application on AWS.
+
+### Architecture Highlights
+- **VPC & Subnet:** Isolated VPC (`10.0.0.0/16`) with public subnet and Internet Gateway.
+- **Security Group:** Ingress restricted to application port `8501` (`allowed_ingress_cidrs`). Optional SSH port 22 disabled by default.
+- **IAM Instance Profile:** Attaches `AmazonSSMManagedInstanceCore` allowing zero-open-port management via AWS Systems Manager.
+- **Storage Encryption:** Root EBS volume encrypted with KMS (`encrypted = true`).
+- **Metadata Protection:** Enforces IMDSv2 (`http_tokens = "required"`) to prevent SSRF credential exfiltration.
+- **EC2 Compute & User Data:** Automatically installs Docker, creates persistent host storage `/var/data/energy`, and starts container.
+
+### Terraform Validation Commands (Without AWS Account)
+```bash
+cd terraform
+
+# Format check
+terraform fmt -check
+
+# Initialize providers without cloud backend
+terraform init -backend=false
+
+# Validate syntax and configuration integrity
+terraform validate
+```
+
+### Terraform Deployment Commands (When AWS Account Available)
+```bash
+# Copy and edit variables
+cp terraform.tfvars.example terraform.tfvars
+
+# Initialize and plan
+terraform init
+terraform plan -out=tfplan
+
+# Apply deployment
+terraform apply tfplan
+
+# Access output URL:
+terraform output application_url
+```
 
 ---
 
-*Built for SEP CIAP Micro Project Assessment — IoT-Based Smart Energy Monitoring System*
+## 🔒 7. DevSecOps Security Controls Summary
+
+| Security Layer | Implementation Details | Validation Standard |
+| :--- | :--- | :--- |
+| **Code Quality (SAST)** | SonarQube with `sonar-project.properties` | SonarQube Quality Gate |
+| **Dependency Security (SCA)**| Trivy filesystem scanning | Zero CRITICAL / HIGH CVEs |
+| **Container Hardening** | Non-root `appuser:1001`, `python:3.12-slim`, healthcheck | CIS Docker Benchmark |
+| **Image Vulnerability** | Trivy container image scan before deployment | JSON & SARIF reports |
+| **Data Persistence** | Volume isolation at `/app/data` for SQLite | Writable by UID 1001 only |
+| **Cloud Network Security** | AWS Security Group with configurable ingress CIDR | Least Privilege Ingress |
+| **Cloud IAM & Access** | AWS Systems Manager (SSM) instead of open SSH | Zero open management ports |
+| **Instance Hardening** | Encrypted EBS storage + IMDSv2 strictly enforced | AWS Well-Architected Security |
+
+---
+
+## 👥 Contributors & License
+
+- **Author:** Vishwajeet ([@vishwajeet1210](https://github.com/vishwajeet1210))
+- **Course:** DevSecOps Lab CIAP Micro Project
+- **License:** MIT License

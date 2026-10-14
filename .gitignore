@@ -1,8 +1,76 @@
-﻿__pycache__/
-*.pyc
-.pytest_cache/
+# ==============================================================================
+# .gitignore - IoT-Based Smart Energy Monitoring and Management System
+# ==============================================================================
+
+# Environment Variables & Secrets
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environments
 .venv/
 venv/
+ENV/
+env/
+env.bak/
+venv.bak/
 
-# CIAP report materials
+# Testing & Coverage Artifacts
+.pytest_cache/
+.coverage
+coverage.xml
+coverage/
+htmlcov/
+results.xml
+.hypothesis/
+
+# Security Scans & Audit Outputs (Keep scripts and templates, ignore generated scan outputs)
+security/*.json
+security/*.sarif
+security/*.txt
+security/trivy-raw-scan.json
+trivy-*.json
+trivy-*.sarif
+trivy-*.txt
+
+# Terraform Infrastructure Artifacts
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfplan
+terraform/crash.log
+terraform/*.tfvars
+!terraform/terraform.tfvars.example
+
+# Local SQLite Database Persistence (Runtime data)
+data/*.db
+data/*.db-wal
+data/*.db-shm
+*.db
+*.sqlite
+*.sqlite3
+
+# CIAP Specific Report Materials (Preserve from accidental commit)
 REPORT_MATERIALS/
+
+# IDE & Editor Settings
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db

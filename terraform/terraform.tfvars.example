@@ -1,0 +1,22 @@
+# ==============================================================================
+# Terraform Variables Example (terraform.tfvars.example)
+# Copy to terraform.tfvars and customize with your parameters
+# ==============================================================================
+
+aws_region            = "ap-south-1"
+environment           = "dev"
+project_name          = "smart-energy-monitor"
+instance_type         = "t3.small"
+app_port              = 8501
+
+# Production Security Recommendation:
+# Restrict this to your specific IP or corporate CIDR, e.g., ["203.0.113.50/32"]
+allowed_ingress_cidrs = ["0.0.0.0/0"]
+
+# Set to true only if direct SSH access is strictly required (SSM is already enabled)
+enable_ssh            = false
+admin_cidr            = ["0.0.0.0/0"]
+ssh_key_name          = ""
+
+# Docker container image published via GHCR or Docker Hub
+docker_image          = "ghcr.io/vishwajeet1210/iot-smart-energy-monitoring:latest"

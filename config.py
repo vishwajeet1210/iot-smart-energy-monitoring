@@ -12,8 +12,8 @@ import os
 # ─────────────────────────────────────────────
 # Database Configuration
 # ─────────────────────────────────────────────
-DATABASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-DATABASE_PATH = os.path.join(DATABASE_DIR, "energy.db")
+DATABASE_DIR = os.getenv("ENERGY_DB_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
+DATABASE_PATH = os.getenv("ENERGY_DB_PATH", os.path.join(DATABASE_DIR, "energy.db"))
 
 # ─────────────────────────────────────────────
 # Electricity Tariff (INR per kWh)

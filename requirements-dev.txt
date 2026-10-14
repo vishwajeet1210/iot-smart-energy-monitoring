@@ -1,0 +1,6 @@
+# Development and Test Dependencies
+# Inherits production runtime dependencies
+-r requirements.txt
+
+# Testing framework
+pytest>=7.4.0

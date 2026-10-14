@@ -9,8 +9,11 @@ Run with:
     streamlit run app.py
 """
 
+# pyrefly: ignore [missing-import]
 import streamlit as st
+# pyrefly: ignore [missing-import]
 import plotly.express as px
+# pyrefly: ignore [missing-import]
 import plotly.graph_objects as go
 import pandas as pd
 
