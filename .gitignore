@@ -46,6 +46,9 @@ trivy-*.json
 trivy-*.sarif
 trivy-*.txt
 
+# Docker Image Archives
+*.tar
+
 # Terraform Infrastructure Artifacts
 terraform/.terraform/
 terraform/.terraform.lock.hcl

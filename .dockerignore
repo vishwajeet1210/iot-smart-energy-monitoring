@@ -32,6 +32,7 @@ security/
 trivy-*.json
 trivy-*.sarif
 trivy-*.txt
+*.tar
 
 # Local Data & SQLite files
 data/*.db

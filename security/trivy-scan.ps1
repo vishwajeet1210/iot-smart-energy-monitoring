@@ -24,6 +24,7 @@ Write-Host "====================================================================
 
 # Check if Trivy is available
 $trivyCmd = Get-Command trivy -ErrorAction SilentlyContinue
+$script:scanFailed = $false
 
 function Invoke-TrivyScan {
     param (
@@ -31,13 +32,21 @@ function Invoke-TrivyScan {
     )
     if ($trivyCmd) {
         & trivy $ScanArgs
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[ERROR] Native Trivy command failed with exit code $LASTEXITCODE" -ForegroundColor Red
+            $script:scanFailed = $true
+        }
     } else {
-        docker run --rm -v //var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache -v "${PWD}:/workspace" aquasec/trivy:latest $ScanArgs
+        docker run --rm -v //var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache -v "${PWD}:/workspace" -w /workspace aquasec/trivy:0.76.0 $ScanArgs
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[ERROR] Containerized Trivy scan failed with exit code $LASTEXITCODE" -ForegroundColor Red
+            $script:scanFailed = $true
+        }
     }
 }
 
 if (-not $trivyCmd) {
-    Write-Host "[INFO] Local trivy binary not found. Falling back to containerized 'aquasec/trivy:latest'..." -ForegroundColor Magenta
+    Write-Host "[INFO] Local trivy binary not found. Falling back to containerized 'aquasec/trivy:0.76.0'..." -ForegroundColor Magenta
 }
 
 Write-Host "`n[1/4] Scanning Filesystem & Dependencies (Primary Full Scan)..." -ForegroundColor Yellow
@@ -58,6 +67,11 @@ Write-Host "`n[4/4] Scanning Docker Container Image (Secondary View - Actionable
 Invoke-TrivyScan @("image", "--severity", $Severity, "--ignore-unfixed", "--format", "json", "-o", "$OutputDir/trivy-image-actionable-report.json", $ImageName)
 Invoke-TrivyScan @("image", "--severity", $Severity, "--ignore-unfixed", "--format", "table", "-o", "$OutputDir/trivy-image-actionable-report.txt", $ImageName)
 
-Write-Host "`n[OK] Trivy dual scan process completed successfully." -ForegroundColor Green
-Write-Host "     - Primary Full Baseline:    $OutputDir/trivy-image-full-report.json (.txt)" -ForegroundColor Green
-Write-Host "     - Secondary Actionable View: $OutputDir/trivy-image-actionable-report.json (.txt)" -ForegroundColor Green
+if ($script:scanFailed) {
+    Write-Host "`n[ERROR] Trivy security audit encountered one or more scan failures. Review logs above." -ForegroundColor Red
+    exit 1
+} else {
+    Write-Host "`n[OK] Trivy dual scan process completed successfully." -ForegroundColor Green
+    Write-Host "     - Primary Full Baseline:     $OutputDir/trivy-image-full-report.json (.txt)" -ForegroundColor Green
+    Write-Host "     - Secondary Actionable View: $OutputDir/trivy-image-actionable-report.json (.txt)" -ForegroundColor Green
+}

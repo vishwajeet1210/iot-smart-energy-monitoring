@@ -13,7 +13,7 @@ This checklist lists all screenshots required for your CIAP project report and p
 For each item:
 - Capture at full resolution (avoid cropped or blurry screenshots).
 - Ensure terminal commands, file paths, and dates/times are clearly readable.
-- Annotate or highlight key security controls (e.g., non-root user, IMDSv2, test counts).
+- Annotate or highlight key security controls (e.g., multi-stage build, non-root user 1001, IMDSv2, test counts, 0 actionable findings).
 - Save captures in `devsecops_evidence/screenshots/` (or your submission folder).
 
 ---
@@ -29,21 +29,23 @@ For each item:
 | **SS-05** | **Web Application** | Energy-Saving Recommendations | `http://localhost:8501` (Recommendations Tab) | Dynamic tips tailored to highest power consumer + solar recommendation | 🔲 To Capture |
 | **SS-06** | **GitHub Repository** | Repository Overview & Tree | `https://github.com/vishwajeet1210/iot-smart-energy-monitoring` | Repository home page showing repo name, branch `main`, latest commit, and file tree containing `Dockerfile`, `Jenkinsfile`, `terraform/`, `security/` | 🔲 To Capture |
 | **SS-07** | **GitHub Repository** | Git Commit History | `https://github.com/vishwajeet1210/iot-smart-energy-monitoring/commits/main` | Clean commit log with descriptive DevSecOps conventional commits | 🔲 To Capture |
-| **SS-08** | **Testing & QA** | Automated Test Execution | Terminal: `pytest tests/test_system.py -v` | Terminal showing all 39 tests passing (`39 passed in 0.XXs`) across IoT simulator, energy calculations, tariffs, alerts, and DB CRUD | 🔲 To Capture |
+| **SS-08** | **Testing & QA** | Automated Test Execution | Terminal: `pytest tests/test_system.py -v` | Terminal showing all 39 tests passing (`39 passed in 0.77s`) across IoT simulator, energy calculations, tariffs, alerts, and DB CRUD | 🔲 To Capture |
 | **SS-09** | **Testing & QA** | Test Suite with JUnit XML | Terminal: `pytest --junitxml=results.xml` | Generated `results.xml` file demonstrating test reporting integration for CI | 🔲 To Capture |
-| **SS-10** | **Dockerization** | Hardened Dockerfile | VS Code / Editor: `Dockerfile` | Highlight: `python:3.12-slim`, unprivileged `appuser:1001`, volume `/app/data`, `HEALTHCHECK` command, and Streamlit entrypoint | 🔲 To Capture |
-| **SS-11** | **Dockerization** | Docker Build Context Exclusions | VS Code / Editor: `.dockerignore` | Highlight exclusion of `.git`, `.pytest_cache`, `terraform`, `security`, and local database files | 🔲 To Capture |
-| **SS-12** | **Dockerization** | Container Build & Run *(When Docker active)* | Terminal: `docker build -t smart-energy-monitor .` & `docker ps` | Terminal showing successful image build, running container, healthy status, and port binding `8501:8501` | 🔲 To Capture |
-| **SS-13** | **CI/CD Pipeline** | Declarative Jenkinsfile | VS Code / Editor: `Jenkinsfile` | Show the 10 declarative stages: SCM Checkout, Setup, Unit Tests, SonarQube, Quality Gate, Trivy SCA, Docker Build, Trivy Image, Terraform, Deploy Gate | 🔲 To Capture |
-| **SS-14** | **CI/CD Pipeline** | Jenkins Pipeline Execution View *(When Jenkins active)* | Jenkins UI: `http://localhost:8080/job/smart-energy-monitor` | Blue Ocean or Stage View showing green stages passing end-to-end | 🔲 To Capture |
-| **SS-15** | **Static Analysis** | SonarQube Project Config | VS Code / Editor: `sonar-project.properties` | Project key, exclusions, python coverage integration, and quality gate wait settings | 🔲 To Capture |
-| **SS-16** | **Static Analysis** | SonarQube Dashboard *(When server active)* | SonarQube UI: `http://localhost:9000/dashboard?id=iot-smart-energy-monitoring` | Quality Gate PASSED status, Bugs: 0, Vulnerabilities: 0, Security Hotspots reviewed | 🔲 To Capture |
-| **SS-17** | **Security Scanning** | Trivy Dependency / FS Scan | Terminal: `trivy fs --severity HIGH,CRITICAL .` | Console table output scanning filesystem dependencies (`requirements.txt`) | 🔲 To Capture |
-| **SS-18** | **Security Scanning** | Trivy Container Image Scan | Terminal: `trivy image smart-energy-monitor:latest` | Console output showing container image vulnerability scan summary | 🔲 To Capture |
-| **SS-19** | **Security Scanning** | Machine-Readable Scan Reports | VS Code / Explorer: `security/` directory | Show generated files `trivy-fs-report.json`, `trivy-image-report.json`, and `vulnerability-report-template.md` | 🔲 To Capture |
-| **SS-20** | **Infrastructure as Code** | Terraform Core Architecture | VS Code / Editor: `terraform/main.tf` | Highlight VPC, public subnet, security group restricting port 8501, IAM SSM instance profile, IMDSv2, and user data Docker automation | 🔲 To Capture |
-| **SS-21** | **Infrastructure as Code** | Terraform Variables & Outputs | VS Code / Editor: `terraform/variables.tf` & `outputs.tf` | Highlight configurable parameters, security comments, and output variables | 🔲 To Capture |
-| **SS-22** | **Infrastructure as Code** | Terraform Validation CLI | Terminal: `terraform fmt -check` & `terraform validate` | Terminal showing clean formatting and `Success! The configuration is valid.` | 🔲 To Capture |
+| **SS-10** | **Dockerization** | Hardened Multi-Stage Dockerfile | VS Code / Editor: `Dockerfile` | Highlight multi-stage architecture: builder stage (`python -m venv`, dependency install, pip strip) and runtime stage (`python:3.12-slim`, purge base pip, `appuser:1001`, `/app/data` volume, `HEALTHCHECK`) | 🔲 To Capture |
+| **SS-11** | **Dockerization** | Docker Build Context Exclusions | VS Code / Editor: `.dockerignore` | Highlight exclusion of `*.tar`, `.git`, `.pytest_cache`, `terraform`, `security`, and local database files | 🔲 To Capture |
+| **SS-12** | **Dockerization** | Multi-Stage Container Build & Run | Terminal: `docker build -t smart-energy-monitor:devsecops .` & `docker ps` | Successful multi-stage build, running container, status `healthy`, non-root execution (`appuser:1001`), and port binding `8501:8501` | 🔲 To Capture |
+| **SS-13** | **Dockerization** | Runtime Isolation & Health Verification | Terminal: `curl.exe http://localhost:8501/_stcore/health` & `which pip` | HTTP 200 OK healthcheck response and terminal confirmation that `pip` is absent from runtime image | 🔲 To Capture |
+| **SS-14** | **CI/CD Pipeline** | Declarative Jenkinsfile | VS Code / Editor: `Jenkinsfile` | Show the 10 declarative stages: SCM Checkout, Setup, Unit Tests, SonarQube, Quality Gate, Trivy SCA, Docker Build, Trivy Image, Terraform, Deploy Gate | 🔲 To Capture |
+| **SS-15** | **CI/CD Pipeline** | Jenkins Pipeline Execution View *(When Jenkins active)* | Jenkins UI: `http://localhost:8080/job/smart-energy-monitor` | Blue Ocean or Stage View showing green stages passing end-to-end | 🔲 To Capture |
+| **SS-16** | **Static Analysis** | SonarQube Project Config | VS Code / Editor: `sonar-project.properties` | Project key, exclusions, python coverage integration, and quality gate wait settings | 🔲 To Capture |
+| **SS-17** | **Static Analysis** | SonarQube Dashboard *(When server active)* | SonarQube UI: `http://localhost:9000/dashboard?id=iot-smart-energy-monitoring` | Quality Gate PASSED status, Bugs: 0, Vulnerabilities: 0, Security Hotspots reviewed | 🔲 To Capture |
+| **SS-18** | **Security Scanning** | Trivy Filesystem Dependency Scan | Terminal: `trivy fs --severity HIGH,CRITICAL .` | Console table output scanning filesystem dependencies (`requirements.txt`) | 🔲 To Capture |
+| **SS-19** | **Security Scanning** | Trivy Multi-Stage Image Scan (Actionable) | Terminal: `trivy image --severity HIGH,CRITICAL --ignore-unfixed ...` | Console output showing **0 actionable findings** (zero developer backlog; all 4 Python CVEs remediated) | 🔲 To Capture |
+| **SS-20** | **Security Scanning** | Trivy Full Image Scan & Residual Debt | Terminal: `trivy image --severity HIGH,CRITICAL ...` | Console output showing full scan: 48 Debian OS distribution debt findings (0 CRITICAL, 0 Python findings) | 🔲 To Capture |
+| **SS-21** | **Security Scanning** | Machine-Readable Multi-Stage Reports | VS Code / Explorer: `security/` directory | Show generated files `trivy-multistage-full-report.json`, `trivy-multistage-actionable-report.json`, and `.txt` tables | 🔲 To Capture |
+| **SS-22** | **Infrastructure as Code** | Terraform Core Architecture | VS Code / Editor: `terraform/main.tf` | Highlight VPC, public subnet, security group restricting port 8501, IAM SSM instance profile, IMDSv2, and user data Docker automation | 🔲 To Capture |
+| **SS-23** | **Infrastructure as Code** | Terraform Variables & Outputs | VS Code / Editor: `terraform/variables.tf` & `outputs.tf` | Highlight configurable parameters, security comments, and output variables | 🔲 To Capture |
+| **SS-24** | **Infrastructure as Code** | Terraform Validation CLI | Terminal: `terraform fmt -check` & `terraform validate` | Terminal showing clean formatting and `Success! The configuration is valid.` | 🔲 To Capture |
 
 ---
 
@@ -71,20 +73,47 @@ pytest -v
 # Run with JUnit XML generation
 pytest -v --junitxml=results.xml
 ```
-- Capture the full terminal showing `39 passed in 0.XXs` (**SS-08**).
+- Capture the full terminal showing `39 passed in 0.77s` (**SS-08**).
 - Open `results.xml` in VS Code split view alongside the terminal (**SS-09**).
 
-### Category 3: Source Code & Configuration (SS-10, SS-11, SS-13, SS-15, SS-20, SS-21)
-Open VS Code in `smart-energy-monitor`:
-- Open `Dockerfile` (**SS-10**).
-- Open `.dockerignore` (**SS-11**).
-- Open `Jenkinsfile` (**SS-13**).
-- Open `sonar-project.properties` (**SS-15**).
-- Open `terraform/main.tf` and `terraform/variables.tf` side by side (**SS-20**, **SS-21**).
+### Category 3: Multi-Stage Docker Build & Runtime Verification (SS-10, SS-11, SS-12, SS-13)
+```bash
+# Build multi-stage image
+docker build -t smart-energy-monitor:devsecops .
 
-### Category 4: GitHub Repository (SS-06, SS-07)
-- Push code to `https://github.com/vishwajeet1210/iot-smart-energy-monitoring` after review.
-- Open repository in browser and capture root directory and commit log.
+# Run container in background
+docker run -d --name smart-energy-monitor-app -p 8501:8501 smart-energy-monitor:devsecops
 
-### Category 5: Security & Live Scans (SS-12, SS-14, SS-16, SS-17, SS-18, SS-22)
-- Execute once Docker Desktop / Jenkins / SonarQube / Trivy tools are running or in CI environment.
+# Verify health status and running container
+docker ps --filter "name=smart-energy-monitor-app"
+
+# Verify non-root execution (UID/GID 1001)
+docker exec smart-energy-monitor-app id
+
+# Verify pip is absent from runtime image
+docker exec smart-energy-monitor-app which pip
+
+# Verify health endpoint returns HTTP 200 OK
+curl.exe -i http://localhost:8501/_stcore/health
+```
+- Capture VS Code showing `Dockerfile` multi-stage structure (**SS-10**).
+- Capture VS Code showing `.dockerignore` (**SS-11**).
+- Capture terminal showing build and `docker ps` with `(healthy)` status (**SS-12**).
+- Capture terminal showing `curl` HTTP 200 OK and `which pip` failure (**SS-13**).
+
+### Category 4: Security & Live Scans (SS-18, SS-19, SS-20, SS-21)
+```bash
+# Actionable scan: reports 0 findings
+docker run --rm -v //var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache -v "${PWD}:/workspace" -w /workspace aquasec/trivy:0.76.0 image --severity HIGH,CRITICAL --ignore-unfixed smart-energy-monitor:devsecops
+
+# Full scan: reports 48 Debian OS findings (0 CRITICAL, 0 Python)
+docker run --rm -v //var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache -v "${PWD}:/workspace" -w /workspace aquasec/trivy:0.76.0 image --severity HIGH,CRITICAL smart-energy-monitor:devsecops
+```
+- Capture terminal showing actionable scan with **0 findings** (**SS-19**).
+- Capture terminal showing full scan with 48 Debian OS distribution debt findings (**SS-20**).
+- Capture VS Code file explorer displaying `security/trivy-multistage-full-report.json` and `security/trivy-multistage-actionable-report.json` (**SS-21**).
+
+### Category 5: Source Code, CI/CD & Cloud Infrastructure (SS-06, SS-07, SS-14 to SS-17, SS-22 to SS-24)
+- Open VS Code to capture `Jenkinsfile` (**SS-14**), `sonar-project.properties` (**SS-16**), `terraform/main.tf` (**SS-22**), and `terraform/variables.tf` (**SS-23**).
+- Run `terraform fmt -check` and `terraform validate` in `terraform/` directory (**SS-24**).
+- Push to GitHub after final review and capture repository root and commit history (**SS-06**, **SS-07**).
