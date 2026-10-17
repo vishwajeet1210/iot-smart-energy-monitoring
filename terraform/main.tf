@@ -1,3 +1,4 @@
+
 # ==============================================================================
 # Terraform Infrastructure as Code - AWS Architecture
 # IoT-Based Smart Energy Monitoring and Management System
@@ -28,9 +29,9 @@ provider "aws" {
   }
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 1. NETWORKING (VPC, Subnet, Internet Gateway, Routing)
-# ──────────────────────────────────────────────────────────────────────────────
+# ==============================================================================
+# 1. NETWORKING
+# ==============================================================================
 
 resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
@@ -83,29 +84,28 @@ resource "aws_route_table_association" "public_assoc" {
   route_table_id = aws_route_table.public.id
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 2. SECURITY GROUPS (Strict Ingress & Controlled Egress)
-# ──────────────────────────────────────────────────────────────────────────────
+# ==============================================================================
+# 2. SECURITY GROUP
+# ==============================================================================
 
 resource "aws_security_group" "app_sg" {
   name        = "${var.project_name}-app-sg"
-  description = "Security Group for IoT Smart Energy Monitor Streamlit App"
+  description = "Security group for the Streamlit energy monitoring application"
   vpc_id      = aws_vpc.main.id
 
-  # Streamlit Web Application Ingress
   ingress {
-    description = "Streamlit dashboard ingress"
+    description = "Restricted Streamlit dashboard access"
     from_port   = var.app_port
     to_port     = var.app_port
     protocol    = "tcp"
     cidr_blocks = var.allowed_ingress_cidrs
   }
 
-  # Optional SSH Access (Restricted to specific management CIDRs)
   dynamic "ingress" {
     for_each = var.enable_ssh ? [1] : []
+
     content {
-      description = "SSH ingress for administration"
+      description = "Restricted SSH administration"
       from_port   = 22
       to_port     = 22
       protocol    = "tcp"
@@ -113,9 +113,8 @@ resource "aws_security_group" "app_sg" {
     }
   }
 
-  # Outbound egress to fetch container images, system packages, and updates
   egress {
-    description = "Allow all outbound traffic"
+    description = "Outbound access for packages and ECR"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -127,31 +126,35 @@ resource "aws_security_group" "app_sg" {
   }
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 3. IAM ROLE & INSTANCE PROFILE (SSM Access, Least Privilege)
-# ──────────────────────────────────────────────────────────────────────────────
+# ==============================================================================
+# 3. IAM ROLE, ECR PULL PERMISSION AND INSTANCE PROFILE
+# ==============================================================================
 
 resource "aws_iam_role" "ec2_role" {
   name = "${var.project_name}-ec2-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "ec2.amazonaws.com"
-        }
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "ec2.amazonaws.com"
       }
-    ]
+    }]
   })
 }
 
-# Attach AWS Systems Manager (SSM) policy for secure shell access without open SSH
+# Allows the instance to register with AWS Systems Manager.
 resource "aws_iam_role_policy_attachment" "ssm_policy" {
   role       = aws_iam_role.ec2_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+# Allows pulling images from private Amazon ECR repositories.
+resource "aws_iam_role_policy_attachment" "ecr_read_only" {
+  role       = aws_iam_role.ec2_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
 resource "aws_iam_instance_profile" "ec2_profile" {
@@ -159,14 +162,13 @@ resource "aws_iam_instance_profile" "ec2_profile" {
   role = aws_iam_role.ec2_role.name
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 4. AMI & COMPUTE INSTANCE (EC2 with Hardened Configuration)
-# ──────────────────────────────────────────────────────────────────────────────
+# ==============================================================================
+# 4. UBUNTU AMI
+# ==============================================================================
 
 data "aws_ami" "ubuntu" {
   most_recent = true
-  owners      = ["099979799413"] # Canonical official AWS account
-
+  owners      = ["099720109477"]
   filter {
     name   = "name"
     values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
@@ -183,6 +185,10 @@ data "aws_ami" "ubuntu" {
   }
 }
 
+# ==============================================================================
+# 5. EC2 INSTANCE AND AUTOMATED CONTAINER DEPLOYMENT
+# ==============================================================================
+
 resource "aws_instance" "app_server" {
   ami                         = data.aws_ami.ubuntu.id
   instance_type               = var.instance_type
@@ -192,14 +198,14 @@ resource "aws_instance" "app_server" {
   iam_instance_profile        = aws_iam_instance_profile.ec2_profile.name
   key_name                    = var.ssh_key_name != "" ? var.ssh_key_name : null
 
-  # Security Hardening: Enforce IMDSv2 (prevents SSRF metadata theft)
+  # Require IMDSv2.
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required"
     http_put_response_hop_limit = 1
   }
 
-  # Security Hardening: Encrypted Root Storage
+  # Encrypted persistent storage for the instance.
   root_block_device {
     volume_size           = 20
     volume_type           = "gp3"
@@ -207,39 +213,93 @@ resource "aws_instance" "app_server" {
     delete_on_termination = true
   }
 
-  # Automated User Data Deployment Script (Ubuntu-based Docker Host)
   user_data = <<-EOF
-              #!/bin/bash
-              set -xe
+    #!/bin/bash
+    set -Eeuo pipefail
 
-              # Non-interactive package installation for Ubuntu
-              export DEBIAN_FRONTEND=noninteractive
-              apt-get update -y
-              apt-get install -y docker.io git
+    exec > >(tee -a /var/log/smart-energy-deploy.log) 2>&1
 
-              # Enable and start Docker service
-              systemctl enable --now docker
+    echo "Starting Smart Energy Monitor deployment"
 
-              # Allow default Ubuntu user to interact with Docker daemon
-              usermod -aG docker ubuntu || true
+    export DEBIAN_FRONTEND=noninteractive
 
-              # Create persistent host data directory for SQLite database
-              mkdir -p /var/data/energy
-              chown -R 1001:1001 /var/data/energy
-              chmod 755 /var/data/energy
+    apt-get update -y
+    apt-get install -y docker.io awscli ca-certificates
 
-              # Run the hardened container with mounted SQLite persistence
-              # Note: If pulling from private registries (e.g., AWS ECR or private GHCR),
-              # registry authentication is a prerequisite prior to container launch.
-              docker run -d \
-                --name smart-energy-monitor \
-                --restart unless-stopped \
-                -p ${var.app_port}:8501 \
-                -v /var/data/energy:/app/data \
-                -e ENERGY_DB_DIR=/app/data \
-                -e ENERGY_DB_PATH=/app/data/energy.db \
-                ${var.docker_image}
-              EOF
+    systemctl enable --now docker
+
+    # Create persistent host directory for the SQLite database.
+    mkdir -p /var/data/energy
+    chown -R 1001:1001 /var/data/energy
+    chmod 755 /var/data/energy
+
+    # Extract the ECR registry hostname from the configured image URI.
+    IMAGE='${var.docker_image}'
+    AWS_REGION='${var.aws_region}'
+    ECR_REGISTRY="$(printf '%s' "$IMAGE" | cut -d/ -f1)"
+
+    if [[ "$ECR_REGISTRY" != *.dkr.ecr."$AWS_REGION".amazonaws.com ]]; then
+      echo "ERROR: Image registry does not match the configured AWS region."
+      exit 1
+    fi
+
+    # Authenticate using the EC2 instance role. Do not store AWS access keys.
+    echo "Authenticating to Amazon ECR"
+
+    for attempt in $(seq 1 5); do
+      if aws ecr get-login-password --region "$AWS_REGION" \
+        | docker login --username AWS --password-stdin "$ECR_REGISTRY"; then
+        break
+      fi
+
+      if [[ "$attempt" -eq 5 ]]; then
+        echo "ERROR: Could not authenticate to ECR."
+        exit 1
+      fi
+
+      echo "ECR authentication attempt $attempt failed; retrying."
+      sleep 10
+    done
+
+    # Pull the image before replacing or starting the application container.
+    docker pull "$IMAGE"
+
+    # Replace a previous container if this startup script is rerun.
+    if docker container inspect smart-energy-monitor >/dev/null 2>&1; then
+      docker rm -f smart-energy-monitor
+    fi
+
+    docker run -d \
+      --name smart-energy-monitor \
+      --restart unless-stopped \
+      -p ${var.app_port}:8501 \
+      -v /var/data/energy:/app/data \
+      -e ENERGY_DB_DIR=/app/data \
+      -e ENERGY_DB_PATH=/app/data/energy.db \
+      "$IMAGE"
+
+    # Wait for the container to become healthy or report its logs.
+    for attempt in $(seq 1 30); do
+      RUNNING="$(docker inspect --format '{{.State.Running}}' smart-energy-monitor || true)"
+
+      if [[ "$RUNNING" == "true" ]]; then
+        echo "Smart Energy Monitor container is running."
+        exit 0
+      fi
+
+      sleep 5
+    done
+
+    echo "ERROR: Container failed to remain running."
+    docker logs smart-energy-monitor || true
+    exit 1
+  EOF
+
+  # Ensure permissions are attached before EC2 boots.
+  depends_on = [
+    aws_iam_role_policy_attachment.ssm_policy,
+    aws_iam_role_policy_attachment.ecr_read_only
+  ]
 
   tags = {
     Name = "${var.project_name}-server"

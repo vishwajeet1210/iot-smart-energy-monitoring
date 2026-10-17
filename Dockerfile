@@ -14,9 +14,9 @@ ENV PYTHONUNBUFFERED=1 \
     STREAMLIT_SERVER_HEADLESS=true \
     STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 
-# Install curl for container health checks
+# Apply available security upgrades and clean package caches
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl && \
+    apt-get upgrade -y && \
     rm -rf /var/lib/apt/lists/*
 
 # Create application directory and unprivileged user for security (Least Privilege)
@@ -43,9 +43,9 @@ USER appuser
 # Expose Streamlit default web port
 EXPOSE 8501
 
-# Healthcheck to verify the web server is responsive
+# Healthcheck to verify the web server is responsive (uses Python stdlib urllib)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8501/_stcore/health || exit 1
+    CMD python3 -c "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8501/_stcore/health').getcode() == 200 else 1)"
 
 # Launch the Streamlit dashboard
 ENTRYPOINT ["streamlit", "run", "app.py"]

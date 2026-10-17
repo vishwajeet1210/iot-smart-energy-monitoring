@@ -2,5 +2,6 @@
 # Inherits production runtime dependencies
 -r requirements.txt
 
-# Testing framework
+# Testing framework and coverage
 pytest>=7.4.0
+pytest-cov>=4.1.0

@@ -17,6 +17,10 @@
 pipeline {
     agent any
 
+    triggers {
+        pollSCM('H/5 * * * *') // Automatically poll GitHub repository every 5 minutes for new commits
+    }
+
     options {
         timeout(time: 30, unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '10'))
@@ -28,15 +32,25 @@ pipeline {
         IMAGE_TAG                = "${env.BUILD_NUMBER ?: 'latest'}"
         PYTHONUNBUFFERED         = '1'
 
+        // AWS & Amazon ECR Settings
+        AWS_REGION               = 'ap-southeast-2'
+        ECR_REGISTRY             = '695496430374.dkr.ecr.ap-southeast-2.amazonaws.com'
+        ECR_REPO                 = 'smart-energy-monitor'
+        EC2_INSTANCE_ID          = 'i-06e85f034d1c71c9c'
+        APP_URL                  = 'http://13.210.96.204:8501'
+
         // Pipeline Behavior Flags
         REQUIRE_SECURITY_SCANS   = 'false' // Set to 'true' to fail build if security tools are missing
+        ENFORCE_QUALITY_GATE     = 'true'  // Set to 'true' to fail build if SonarCloud quality gate fails
         REQUIRE_IAC_VALIDATION   = 'false' // Set to 'true' to fail build if terraform is missing
-        PUBLISH_TO_DOCKERHUB     = 'false' // Set to 'true' to push image to Docker Hub using Jenkins credentials
+        PUBLISH_TO_ECR           = 'true'  // Push image to Amazon ECR
+        DEPLOY_TO_EC2            = 'true'  // Deploy image to AWS EC2 via AWS Systems Manager
 
         // SonarCloud Credential ID (Secret text in Jenkins)
         SONAR_CREDENTIALS_ID     = 'sonarcloud-token'
 
-        // Docker Hub Registry Settings (used only when PUBLISH_TO_DOCKERHUB is 'true')
+        // Optional Docker Hub Registry Settings (used only when PUBLISH_TO_DOCKERHUB is 'true')
+        PUBLISH_TO_DOCKERHUB     = 'false'
         DOCKERHUB_CREDENTIALS_ID = 'dockerhub-credentials'
         DOCKERHUB_REPO           = 'vishwajeet1210/smart-energy-monitor'
     }
@@ -55,6 +69,7 @@ pipeline {
                     env.STAGE_SECURITY_STATUS = 'NOT_RUN'
                     env.STAGE_DOCKER_STATUS   = 'NOT_RUN'
                     env.STAGE_IAC_STATUS      = 'NOT_RUN'
+                    env.STAGE_DEPLOY_STATUS   = 'NOT_RUN'
                     env.TRIVY_SCAN_STATUS     = 'NOT_RUN'
                     env.SONAR_SCAN_STATUS     = 'NOT_RUN'
                 }
@@ -78,21 +93,21 @@ pipeline {
         // ──────────────────────────────────────────────────────────────────────
         stage('Unit Testing & QA') {
             steps {
-                echo "🧪 Running pytest test suite (39 tests) and publishing JUnit XML..."
+                echo "🧪 Running pytest test suite (39 tests) and publishing JUnit XML & coverage..."
                 script {
                     if (isUnix()) {
                         sh '''
                             python3 -m venv .venv
                             . .venv/bin/activate
-                            pip install --no-cache-dir -r requirements.txt pytest
-                            pytest --junitxml=results.xml tests/test_system.py
+                            pip install --no-cache-dir -r requirements.txt pytest pytest-cov
+                            pytest --cov=. --cov-report=xml:coverage.xml --cov-report=term --junitxml=results.xml tests/test_system.py
                         '''
                     } else {
                         bat '''
                             python -m venv .venv
                             call .venv\\Scripts\\activate.bat
-                            pip install --no-cache-dir -r requirements.txt pytest
-                            pytest --junitxml=results.xml tests/test_system.py
+                            pip install --no-cache-dir -r requirements.txt pytest pytest-cov
+                            pytest --cov=. --cov-report=xml:coverage.xml --cov-report=term --junitxml=results.xml tests/test_system.py
                         '''
                     }
                     env.STAGE_TESTS_STATUS = 'PASSED'
@@ -101,6 +116,7 @@ pipeline {
             post {
                 always {
                     junit testResults: 'results.xml', allowEmptyResults: true
+                    archiveArtifacts artifacts: 'coverage.xml, results.xml', allowEmptyArchive: true
                 }
                 failure {
                     script {
@@ -160,7 +176,7 @@ pipeline {
                                 env.SONAR_SCAN_STATUS = 'FAILED'
                                 echo "[ERROR] SonarCloud scan failed: ${msg}"
                             }
-                            if (env.REQUIRE_SECURITY_SCANS == 'true') {
+                            if (env.ENFORCE_QUALITY_GATE == 'true' || env.REQUIRE_SECURITY_SCANS == 'true') {
                                 throw e
                             }
                         }
@@ -273,12 +289,41 @@ pipeline {
                         }
                     }
 
+                    // Amazon ECR publishing
+                    if (env.PUBLISH_TO_ECR == 'true') {
+                        echo "🔑 PUBLISH_TO_ECR=true. Authenticating and pushing to Amazon ECR (${env.ECR_REGISTRY})..."
+                        try {
+                            if (isUnix()) {
+                                sh """
+                                    docker run --rm -v "C:/Users/Vishwajeet/.aws:/root/.aws" amazon/aws-cli ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
+                                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${ECR_REGISTRY}/${ECR_REPO}:latest
+                                    docker push ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
+                                    docker push ${ECR_REGISTRY}/${ECR_REPO}:latest
+                                    docker logout ${ECR_REGISTRY}
+                                """
+                            } else {
+                                powershell """
+                                    docker run --rm -v "\${env:USERPROFILE}\\.aws:/root/.aws" amazon/aws-cli ecr get-login-password --region ${env.AWS_REGION} | docker login --username AWS --password-stdin ${env.ECR_REGISTRY}
+                                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
+                                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${ECR_REGISTRY}/${ECR_REPO}:latest
+                                    docker push ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
+                                    docker push ${ECR_REGISTRY}/${ECR_REPO}:latest
+                                    docker logout ${ECR_REGISTRY}
+                                """
+                            }
+                            echo "✅ Docker image published to Amazon ECR: ${env.ECR_REGISTRY}/${env.ECR_REPO}:${env.IMAGE_TAG}"
+                        } catch (Exception e) {
+                            echo "[ERROR] Failed to publish image to Amazon ECR: ${e.getMessage()}"
+                            throw e
+                        }
+                    }
+
                     // Optional Docker Hub publishing (strictly credential-based, zero secrets in command text)
                     if (env.PUBLISH_TO_DOCKERHUB == 'true') {
                         echo "🔑 PUBLISH_TO_DOCKERHUB=true. Authenticating via Jenkins credentials ID '${env.DOCKERHUB_CREDENTIALS_ID}'..."
                         withCredentials([usernamePassword(credentialsId: env.DOCKERHUB_CREDENTIALS_ID, usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
                             if (isUnix()) {
-                                // On Linux, stream password via POSIX stdin (never embedded in command text)
                                 sh """
                                     printf '%s\\n' "\$DH_PASS" | docker login -u "\$DH_USER" --password-stdin
                                     docker tag ${IMAGE_NAME}:latest ${DOCKERHUB_REPO}:${IMAGE_TAG}
@@ -288,7 +333,6 @@ pipeline {
                                     docker logout
                                 """
                             } else {
-                                // On Windows, stream password via PowerShell from process environment (never embedded in command text)
                                 powershell """
                                     \$env:DH_PASS | docker login -u \$env:DH_USER --password-stdin
                                     docker tag ${IMAGE_NAME}:latest ${DOCKERHUB_REPO}:${IMAGE_TAG}
@@ -302,7 +346,6 @@ pipeline {
                         }
                     } else {
                         echo "[INFO] Docker Hub publishing disabled (PUBLISH_TO_DOCKERHUB=false)."
-                        echo "[STATUS] Image stored in local Docker daemon (${IMAGE_NAME}:${IMAGE_TAG}); remote push omitted."
                     }
                     env.STAGE_DOCKER_STATUS = 'PASSED'
                 }
@@ -420,6 +463,121 @@ pipeline {
                 }
             }
         }
+
+        // ──────────────────────────────────────────────────────────────────────
+        // STAGE 6: Continuous Deployment to AWS EC2 (via AWS Systems Manager)
+        // ──────────────────────────────────────────────────────────────────────
+        stage('Deploy to EC2 (SSM)') {
+            when {
+                expression { env.DEPLOY_TO_EC2 == 'true' }
+            }
+            steps {
+                echo "🚀 Deploying updated container to EC2 instance '${env.EC2_INSTANCE_ID}' via AWS Systems Manager..."
+                script {
+                    try {
+                        if (isUnix()) {
+                            sh """
+                                set -e
+                                echo "Sending SSM deployment command to instance ${EC2_INSTANCE_ID}..."
+                                CMD_ID=\$(docker run --rm -v "C:/Users/Vishwajeet/.aws:/root/.aws" -e AWS_REGION=${AWS_REGION} amazon/aws-cli ssm send-command \
+                                    --instance-ids "${EC2_INSTANCE_ID}" \
+                                    --document-name "AWS-RunShellScript" \
+                                    --parameters 'commands=[
+                                        "set -e",
+                                        "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}",
+                                        "docker pull ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}",
+                                        "if docker inspect ${APP_NAME} >/dev/null 2>&1; then docker stop ${APP_NAME} && docker rm ${APP_NAME}; fi",
+                                        "docker run -d --name ${APP_NAME} --restart unless-stopped -p 8501:8501 -v /var/data/energy:/app/data -e ENERGY_DB_DIR=/app/data -e ENERGY_DB_PATH=/app/data/energy.db ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}",
+                                        "for i in \\\$(seq 1 30); do STATUS=\\\$(docker inspect --format=\\"{{.State.Health.Status}}\\" ${APP_NAME} 2>/dev/null || true); if [ \\\"\\\$STATUS\\\" = \\\"healthy\\\" ]; then echo \\\"Container is healthy\\\"; break; fi; sleep 2; done",
+                                        "docker inspect --format=\\"Image: {{.Config.Image}} | ImageID: {{.Image}} | Status: {{.State.Status}} | Health: {{.State.Health.Status}}\\" ${APP_NAME}",
+                                        "ls -la /var/data/energy"
+                                    ]' \
+                                    --query "Command.CommandId" \
+                                    --output text)
+
+                                echo "SSM Command dispatched: \${CMD_ID}. Awaiting execution..."
+                                sleep 10
+                                for i in \$(seq 1 15); do
+                                    STATUS=\$(docker run --rm -v "C:/Users/Vishwajeet/.aws:/root/.aws" -e AWS_REGION=${AWS_REGION} amazon/aws-cli ssm get-command-invocation \
+                                        --command-id "\${CMD_ID}" \
+                                        --instance-id "${EC2_INSTANCE_ID}" \
+                                        --query "Status" \
+                                        --output text 2>/dev/null || echo "Pending")
+                                    if [ "\$STATUS" = "Success" ]; then
+                                        echo "SSM Deployment command completed successfully."
+                                        break
+                                    elif [ "\$STATUS" = "Failed" ]; then
+                                        echo "ERROR: SSM Deployment command failed."
+                                        docker run --rm -v "C:/Users/Vishwajeet/.aws:/root/.aws" -e AWS_REGION=${AWS_REGION} amazon/aws-cli ssm get-command-invocation \
+                                            --command-id "\${CMD_ID}" \
+                                            --instance-id "${EC2_INSTANCE_ID}"
+                                        exit 1
+                                    fi
+                                    echo "SSM execution status: \$STATUS (waiting...)"
+                                    sleep 4
+                                done
+
+                                echo "Verifying HTTP health endpoint: ${APP_URL}/_stcore/health..."
+                                python3 -c "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('${APP_URL}/_stcore/health', timeout=10).getcode() == 200 else 1)"
+                            """
+                        } else {
+                            powershell """
+                                Write-Host "Sending SSM deployment command to instance ${env.EC2_INSTANCE_ID}..."
+                                \$cmdId = docker run --rm -v "\${env:USERPROFILE}\\.aws:/root/.aws" -e AWS_REGION=${env.AWS_REGION} amazon/aws-cli ssm send-command `
+                                    --instance-ids "${env.EC2_INSTANCE_ID}" `
+                                    --document-name "AWS-RunShellScript" `
+                                    --parameters 'commands=[
+                                        "set -e",
+                                        "aws ecr get-login-password --region ${env.AWS_REGION} | docker login --username AWS --password-stdin ${env.ECR_REGISTRY}",
+                                        "docker pull ${env.ECR_REGISTRY}/${env.ECR_REPO}:${env.IMAGE_TAG}",
+                                        "if docker inspect ${env.APP_NAME} >/dev/null 2>&1; then docker stop ${env.APP_NAME} && docker rm ${env.APP_NAME}; fi",
+                                        "docker run -d --name ${env.APP_NAME} --restart unless-stopped -p 8501:8501 -v /var/data/energy:/app/data -e ENERGY_DB_DIR=/app/data -e ENERGY_DB_PATH=/app/data/energy.db ${env.ECR_REGISTRY}/${env.ECR_REPO}:${env.IMAGE_TAG}",
+                                        "for i in \\\$(seq 1 30); do STATUS=\\\$(docker inspect --format=\\"{{.State.Health.Status}}\\" ${env.APP_NAME} 2>/dev/null || true); if [ \\\"\\\$STATUS\\\" = \\\"healthy\\\" ]; then echo \\\"Container is healthy\\\"; break; fi; sleep 2; done",
+                                        "docker inspect --format=\\"Image: {{.Config.Image}} | ImageID: {{.Image}} | Status: {{.State.Status}} | Health: {{.State.Health.Status}}\\" ${env.APP_NAME}",
+                                        "ls -la /var/data/energy"
+                                    ]' `
+                                    --query "Command.CommandId" `
+                                    --output text
+
+                                Write-Host "SSM Command dispatched: \$cmdId. Awaiting execution..."
+                                Start-Sleep -Seconds 10
+                                for (\$i = 1; \$i -le 15; \$i++) {
+                                    \$status = docker run --rm -v "\${env:USERPROFILE}\\.aws:/root/.aws" -e AWS_REGION=${env.AWS_REGION} amazon/aws-cli ssm get-command-invocation `
+                                        --command-id "\$cmdId" `
+                                        --instance-id "${env.EC2_INSTANCE_ID}" `
+                                        --query "Status" `
+                                        --output text
+                                    if (\$status -eq "Success") {
+                                        Write-Host "SSM Deployment command completed successfully."
+                                        break
+                                    } elseif (\$status -eq "Failed") {
+                                        Write-Error "ERROR: SSM Deployment command failed."
+                                        exit 1
+                                    }
+                                    Start-Sleep -Seconds 4
+                                }
+
+                                Write-Host "Verifying HTTP health endpoint: ${env.APP_URL}/_stcore/health..."
+                                curl.exe -s -f --connect-timeout 10 "${env.APP_URL}/_stcore/health"
+                            """
+                        }
+                        env.STAGE_DEPLOY_STATUS = 'PASSED'
+                        echo "✅ Application successfully deployed and verified on EC2: ${env.APP_URL}"
+                    } catch (Exception e) {
+                        env.STAGE_DEPLOY_STATUS = 'FAILED'
+                        echo "[ERROR] Deployment to EC2 failed: ${e.getMessage()}"
+                        throw e
+                    }
+                }
+            }
+            post {
+                failure {
+                    script {
+                        env.STAGE_DEPLOY_STATUS = 'FAILED'
+                    }
+                }
+            }
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -432,12 +590,13 @@ pipeline {
                 echo "                      PIPELINE EXECUTION SUMMARY                        "
                 echo "========================================================================"
                 echo " 1. Source Checkout:      ${env.STAGE_CHECKOUT_STATUS ?: 'NOT_RUN'}"
-                echo " 2. Automated Tests:      ${env.STAGE_TESTS_STATUS ?: 'NOT_RUN'}"
+                echo " 2. Automated Tests & QA: ${env.STAGE_TESTS_STATUS ?: 'NOT_RUN'}"
                 echo " 3. Security & Quality:   ${env.STAGE_SECURITY_STATUS ?: 'NOT_RUN'}"
                 echo "    - Trivy (Image Scan): ${env.TRIVY_SCAN_STATUS ?: 'NOT_RUN'}"
                 echo "    - SonarCloud (SAST):  ${env.SONAR_SCAN_STATUS ?: 'NOT_RUN'}"
-                echo " 4. Docker Build:         ${env.STAGE_DOCKER_STATUS ?: 'NOT_RUN'}"
+                echo " 4. Docker Build & ECR:   ${env.STAGE_DOCKER_STATUS ?: 'NOT_RUN'}"
                 echo " 5. Terraform Validation: ${env.STAGE_IAC_STATUS ?: 'NOT_RUN'}"
+                echo " 6. AWS EC2 Deployment:   ${env.STAGE_DEPLOY_STATUS ?: 'NOT_RUN'}"
                 echo "========================================================================"
             }
         }
