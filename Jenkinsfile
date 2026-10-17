@@ -33,6 +33,9 @@ pipeline {
         REQUIRE_IAC_VALIDATION   = 'false' // Set to 'true' to fail build if terraform is missing
         PUBLISH_TO_DOCKERHUB     = 'false' // Set to 'true' to push image to Docker Hub using Jenkins credentials
 
+        // SonarCloud Credential ID (Secret text in Jenkins)
+        SONAR_CREDENTIALS_ID     = 'sonarcloud-token'
+
         // Docker Hub Registry Settings (used only when PUBLISH_TO_DOCKERHUB is 'true')
         DOCKERHUB_CREDENTIALS_ID = 'dockerhub-credentials'
         DOCKERHUB_REPO           = 'vishwajeet1210/smart-energy-monitor'
@@ -112,37 +115,87 @@ pipeline {
         // ──────────────────────────────────────────────────────────────────────
         stage('Security & Code Quality') {
             steps {
-                echo "🔍 Checking for static analysis tools..."
+                echo "🔍 Checking for static analysis tools (SonarCloud)..."
                 script {
-                    def hasSonar = false
+                    def hasDocker   = false
+                    def hasSonarCli = false
 
                     if (isUnix()) {
-                        hasSonar = (sh(script: 'command -v sonar-scanner >/dev/null 2>&1', returnStatus: true) == 0)
+                        hasDocker   = (sh(script: 'command -v docker >/dev/null 2>&1', returnStatus: true) == 0)
+                        hasSonarCli = (sh(script: 'command -v sonar-scanner >/dev/null 2>&1', returnStatus: true) == 0)
                     } else {
-                        hasSonar = (bat(script: 'where sonar-scanner >nul 2>nul', returnStatus: true) == 0)
+                        hasDocker   = (bat(script: 'where docker >nul 2>nul', returnStatus: true) == 0)
+                        hasSonarCli = (bat(script: 'where sonar-scanner >nul 2>nul', returnStatus: true) == 0)
                     }
 
-                    // Static Code Analysis (SAST via SonarQube Scanner)
-                    if (hasSonar) {
-                        echo "🔍 Running SonarQube Scanner for static analysis..."
+                    // Static Code Analysis (SAST via SonarCloud)
+                    if (hasDocker) {
+                        echo "🔍 Running SonarCloud static analysis via sonarsource/sonar-scanner-cli:latest..."
+                        def sonarImage = 'sonarsource/sonar-scanner-cli:latest'
                         try {
-                            if (isUnix()) {
-                                sh 'sonar-scanner -Dproject.settings=sonar-project.properties'
-                            } else {
-                                bat 'sonar-scanner -Dproject.settings=sonar-project.properties'
+                            withCredentials([string(credentialsId: env.SONAR_CREDENTIALS_ID, variable: 'SONAR_TOKEN')]) {
+                                if (isUnix()) {
+                                    sh """
+                                        if [ -n "\$JENKINS_HOME" ] && command -v hostname >/dev/null 2>&1 && docker inspect "\$(hostname)" >/dev/null 2>&1; then
+                                            docker run --rm --volumes-from "\$(hostname)" -w "\${PWD}" -e SONAR_TOKEN ${sonarImage} "-Dsonar.host.url=https://sonarcloud.io"
+                                        else
+                                            docker run --rm -v "\${PWD}:/usr/src" -w /usr/src -e SONAR_TOKEN ${sonarImage} "-Dsonar.host.url=https://sonarcloud.io"
+                                        fi
+                                    """
+                                } else {
+                                    powershell """
+                                        docker run --rm -v "\${PWD}:/usr/src" -w /usr/src -e SONAR_TOKEN ${sonarImage} "-Dsonar.host.url=https://sonarcloud.io"
+                                    """
+                                }
+                                env.SONAR_SCAN_STATUS = 'PASSED'
+                                echo "✅ SonarCloud static analysis passed."
                             }
-                            env.SONAR_SCAN_STATUS = 'PASSED'
                         } catch (Exception e) {
-                            env.SONAR_SCAN_STATUS = 'FAILED'
-                            throw e
+                            def msg = e.getMessage() ?: ''
+                            if (msg.contains("Could not find credentials") || msg.contains(env.SONAR_CREDENTIALS_ID)) {
+                                env.SONAR_SCAN_STATUS = "NOT_RUN (Credential missing: ${env.SONAR_CREDENTIALS_ID})"
+                                echo "[WARNING] Jenkins credential '${env.SONAR_CREDENTIALS_ID}' (Secret text) was not found."
+                                echo "[STATUS] Static code analysis (SAST): NOT RUN (Prerequisite credential missing: ${env.SONAR_CREDENTIALS_ID})"
+                            } else {
+                                env.SONAR_SCAN_STATUS = 'FAILED'
+                                echo "[ERROR] SonarCloud scan failed: ${msg}"
+                            }
+                            if (env.REQUIRE_SECURITY_SCANS == 'true') {
+                                throw e
+                            }
+                        }
+                    } else if (hasSonarCli) {
+                        echo "🔍 Running local SonarQube Scanner for static analysis..."
+                        try {
+                            withCredentials([string(credentialsId: env.SONAR_CREDENTIALS_ID, variable: 'SONAR_TOKEN')]) {
+                                if (isUnix()) {
+                                    sh 'sonar-scanner -Dproject.settings=sonar-project.properties -Dsonar.host.url=https://sonarcloud.io'
+                                } else {
+                                    bat 'sonar-scanner -Dproject.settings=sonar-project.properties -Dsonar.host.url=https://sonarcloud.io'
+                                }
+                                env.SONAR_SCAN_STATUS = 'PASSED'
+                                echo "✅ SonarCloud static analysis passed."
+                            }
+                        } catch (Exception e) {
+                            def msg = e.getMessage() ?: ''
+                            if (msg.contains("Could not find credentials") || msg.contains(env.SONAR_CREDENTIALS_ID)) {
+                                env.SONAR_SCAN_STATUS = "NOT_RUN (Credential missing: ${env.SONAR_CREDENTIALS_ID})"
+                                echo "[WARNING] Jenkins credential '${env.SONAR_CREDENTIALS_ID}' (Secret text) was not found."
+                            } else {
+                                env.SONAR_SCAN_STATUS = 'FAILED'
+                                echo "[ERROR] SonarScanner execution failed: ${msg}"
+                            }
+                            if (env.REQUIRE_SECURITY_SCANS == 'true') {
+                                throw e
+                            }
                         }
                     } else {
-                        env.SONAR_SCAN_STATUS = 'NOT_RUN (CLI missing)'
+                        env.SONAR_SCAN_STATUS = 'NOT_RUN (Docker missing)'
                         if (env.REQUIRE_SECURITY_SCANS == 'true') {
-                            error("❌ Security Gate Failure: SonarQube Scanner is required but not installed on this agent.")
+                            error("❌ Security Gate Failure: Docker (or sonar-scanner CLI) is required but not installed on this agent.")
                         } else {
-                            echo "[WARNING] SonarQube Scanner is not installed or configured on this agent."
-                            echo "[STATUS] Static code analysis (SAST): NOT RUN (Tool missing: sonar-scanner)"
+                            echo "[WARNING] Neither Docker nor sonar-scanner CLI is installed on this agent."
+                            echo "[STATUS] Static code analysis (SAST): NOT RUN (Tool missing: docker or sonar-scanner)"
                         }
                     }
 
@@ -286,32 +339,74 @@ pipeline {
                     }
 
                     dir('terraform') {
+                        def hasDocker    = false
                         def hasTerraform = false
 
                         if (isUnix()) {
+                            hasDocker    = (sh(script: 'command -v docker >/dev/null 2>&1', returnStatus: true) == 0)
                             hasTerraform = (sh(script: 'command -v terraform >/dev/null 2>&1', returnStatus: true) == 0)
                         } else {
+                            hasDocker    = (bat(script: 'where docker >nul 2>nul', returnStatus: true) == 0)
                             hasTerraform = (bat(script: 'where terraform >nul 2>nul', returnStatus: true) == 0)
                         }
 
-                        if (hasTerraform) {
-                            echo "🏗️ Running Terraform initialization and validation..."
-                            if (isUnix()) {
-                                sh 'terraform init -backend=false'
-                                sh 'terraform validate'
-                            } else {
-                                bat 'terraform init -backend=false'
-                                bat 'terraform validate'
+                        def tfImage = 'hashicorp/terraform:latest'
+
+                        if (hasDocker) {
+                            echo "🏗️ Running containerized Terraform fmt -check, init, and validate (${tfImage})..."
+                            try {
+                                if (isUnix()) {
+                                    sh """
+                                        if [ -n "\$JENKINS_HOME" ] && command -v hostname >/dev/null 2>&1 && docker inspect "\$(hostname)" >/dev/null 2>&1; then
+                                            docker run --rm --volumes-from "\$(hostname)" -w "\${PWD}" ${tfImage} fmt -check
+                                            docker run --rm --volumes-from "\$(hostname)" -w "\${PWD}" ${tfImage} init -backend=false
+                                            docker run --rm --volumes-from "\$(hostname)" -w "\${PWD}" ${tfImage} validate
+                                        else
+                                            docker run --rm -v "\${PWD}:/workspace" -w /workspace ${tfImage} fmt -check
+                                            docker run --rm -v "\${PWD}:/workspace" -w /workspace ${tfImage} init -backend=false
+                                            docker run --rm -v "\${PWD}:/workspace" -w /workspace ${tfImage} validate
+                                        fi
+                                    """
+                                } else {
+                                    powershell """
+                                        docker run --rm -v "\${PWD}:/workspace" -w /workspace ${tfImage} fmt -check
+                                        docker run --rm -v "\${PWD}:/workspace" -w /workspace ${tfImage} init -backend=false
+                                        docker run --rm -v "\${PWD}:/workspace" -w /workspace ${tfImage} validate
+                                    """
+                                }
+                                env.STAGE_IAC_STATUS = 'PASSED'
+                                echo "✅ Terraform configuration is valid and properly formatted."
+                            } catch (Exception e) {
+                                env.STAGE_IAC_STATUS = 'FAILED'
+                                echo "[ERROR] Terraform IaC validation failed: ${e.getMessage()}"
+                                throw e
                             }
-                            env.STAGE_IAC_STATUS = 'PASSED'
-                            echo "✅ Terraform configuration is valid."
+                        } else if (hasTerraform) {
+                            echo "🏗️ Running local Terraform formatting check, initialization and validation..."
+                            try {
+                                if (isUnix()) {
+                                    sh 'terraform fmt -check'
+                                    sh 'terraform init -backend=false'
+                                    sh 'terraform validate'
+                                } else {
+                                    bat 'terraform fmt -check'
+                                    bat 'terraform init -backend=false'
+                                    bat 'terraform validate'
+                                }
+                                env.STAGE_IAC_STATUS = 'PASSED'
+                                echo "✅ Terraform configuration is valid."
+                            } catch (Exception e) {
+                                env.STAGE_IAC_STATUS = 'FAILED'
+                                echo "[ERROR] Terraform validation failed: ${e.getMessage()}"
+                                throw e
+                            }
                         } else {
-                            env.STAGE_IAC_STATUS = 'NOT_RUN (CLI missing)'
+                            env.STAGE_IAC_STATUS = 'NOT_RUN (Docker missing)'
                             if (env.REQUIRE_IAC_VALIDATION == 'true') {
-                                error("❌ IaC Gate Failure: Terraform CLI is required but not installed on this agent.")
+                                error("❌ IaC Gate Failure: Docker (or Terraform CLI) is required but not installed on this agent.")
                             } else {
-                                echo "[WARNING] Terraform CLI is not installed on this agent."
-                                echo "[STATUS] IaC validation: NOT RUN (Missing prerequisite: terraform)"
+                                echo "[WARNING] Neither Docker nor Terraform CLI is installed on this agent."
+                                echo "[STATUS] IaC validation: NOT RUN (Missing prerequisite: docker or terraform)"
                             }
                         }
                     }
@@ -340,7 +435,7 @@ pipeline {
                 echo " 2. Automated Tests:      ${env.STAGE_TESTS_STATUS ?: 'NOT_RUN'}"
                 echo " 3. Security & Quality:   ${env.STAGE_SECURITY_STATUS ?: 'NOT_RUN'}"
                 echo "    - Trivy (Image Scan): ${env.TRIVY_SCAN_STATUS ?: 'NOT_RUN'}"
-                echo "    - SonarQube (SAST):   ${env.SONAR_SCAN_STATUS ?: 'NOT_RUN'}"
+                echo "    - SonarCloud (SAST):  ${env.SONAR_SCAN_STATUS ?: 'NOT_RUN'}"
                 echo " 4. Docker Build:         ${env.STAGE_DOCKER_STATUS ?: 'NOT_RUN'}"
                 echo " 5. Terraform Validation: ${env.STAGE_IAC_STATUS ?: 'NOT_RUN'}"
                 echo "========================================================================"
