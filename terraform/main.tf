@@ -163,28 +163,34 @@ resource "aws_iam_instance_profile" "ec2_profile" {
 # 4. AMI & COMPUTE INSTANCE (EC2 with Hardened Configuration)
 # ──────────────────────────────────────────────────────────────────────────────
 
-data "aws_ami" "amazon_linux_2023" {
+data "aws_ami" "ubuntu" {
   most_recent = true
-  owners      = ["amazon"]
+  owners      = ["099979799413"] # Canonical official AWS account
 
   filter {
     name   = "name"
-    values = ["al2023-ami-2023.*-x86_64"]
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
   }
 
   filter {
     name   = "virtualization-type"
     values = ["hvm"]
   }
+
+  filter {
+    name   = "architecture"
+    values = ["x86_64"]
+  }
 }
 
 resource "aws_instance" "app_server" {
-  ami                  = data.aws_ami.amazon_linux_2023.id
-  instance_type        = var.instance_type
-  subnet_id            = aws_subnet.public.id
-  vpc_security_group_ids = [aws_security_group.app_sg.id]
-  iam_instance_profile = aws_iam_instance_profile.ec2_profile.name
-  key_name             = var.ssh_key_name != "" ? var.ssh_key_name : null
+  ami                         = data.aws_ami.ubuntu.id
+  instance_type               = var.instance_type
+  subnet_id                   = aws_subnet.public.id
+  associate_public_ip_address = true
+  vpc_security_group_ids      = [aws_security_group.app_sg.id]
+  iam_instance_profile        = aws_iam_instance_profile.ec2_profile.name
+  key_name                    = var.ssh_key_name != "" ? var.ssh_key_name : null
 
   # Security Hardening: Enforce IMDSv2 (prevents SSRF metadata theft)
   metadata_options {
@@ -201,14 +207,21 @@ resource "aws_instance" "app_server" {
     delete_on_termination = true
   }
 
-  # Automated User Data Deployment Script
+  # Automated User Data Deployment Script (Ubuntu-based Docker Host)
   user_data = <<-EOF
               #!/bin/bash
               set -xe
-              dnf update -y
-              dnf install -y docker git
+
+              # Non-interactive package installation for Ubuntu
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -y
+              apt-get install -y docker.io git
+
+              # Enable and start Docker service
               systemctl enable --now docker
-              usermod -aG docker ec2-user
+
+              # Allow default Ubuntu user to interact with Docker daemon
+              usermod -aG docker ubuntu || true
 
               # Create persistent host data directory for SQLite database
               mkdir -p /var/data/energy
@@ -216,6 +229,8 @@ resource "aws_instance" "app_server" {
               chmod 755 /var/data/energy
 
               # Run the hardened container with mounted SQLite persistence
+              # Note: If pulling from private registries (e.g., AWS ECR or private GHCR),
+              # registry authentication is a prerequisite prior to container launch.
               docker run -d \
                 --name smart-energy-monitor \
                 --restart unless-stopped \
