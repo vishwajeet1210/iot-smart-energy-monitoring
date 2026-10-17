@@ -108,48 +108,21 @@ pipeline {
         }
 
         // ──────────────────────────────────────────────────────────────────────
-        // STAGE 3: Security & Code Quality (SAST & SCA)
+        // STAGE 3: Security & Code Quality (Static Analysis - SAST)
         // ──────────────────────────────────────────────────────────────────────
         stage('Security & Code Quality') {
             steps {
-                echo "🔍 Checking for security tools and running static/dependency scans..."
+                echo "🔍 Checking for static analysis tools..."
                 script {
-                    def hasTrivy = false
                     def hasSonar = false
 
                     if (isUnix()) {
-                        hasTrivy = (sh(script: 'command -v trivy >/dev/null 2>&1', returnStatus: true) == 0)
                         hasSonar = (sh(script: 'command -v sonar-scanner >/dev/null 2>&1', returnStatus: true) == 0)
                     } else {
-                        hasTrivy = (bat(script: 'where trivy >nul 2>nul', returnStatus: true) == 0)
                         hasSonar = (bat(script: 'where sonar-scanner >nul 2>nul', returnStatus: true) == 0)
                     }
 
-                    // 1. Dependency Vulnerability Scan (SCA via Trivy)
-                    if (hasTrivy) {
-                        echo "🛡️ Running Trivy dependency vulnerability scan..."
-                        try {
-                            if (isUnix()) {
-                                sh 'trivy fs --severity HIGH,CRITICAL --format table .'
-                            } else {
-                                bat 'trivy fs --severity HIGH,CRITICAL --format table .'
-                            }
-                            env.TRIVY_SCAN_STATUS = 'PASSED'
-                        } catch (Exception e) {
-                            env.TRIVY_SCAN_STATUS = 'FAILED'
-                            throw e
-                        }
-                    } else {
-                        env.TRIVY_SCAN_STATUS = 'NOT_RUN (CLI missing)'
-                        if (env.REQUIRE_SECURITY_SCANS == 'true') {
-                            error("❌ Security Gate Failure: Trivy CLI is required but not installed on this agent.")
-                        } else {
-                            echo "[WARNING] Trivy CLI is not installed on this agent."
-                            echo "[STATUS] Dependency vulnerability scan (SCA): NOT RUN (Tool missing: trivy)"
-                        }
-                    }
-
-                    // 2. Static Code Analysis (SAST via SonarQube Scanner)
+                    // Static Code Analysis (SAST via SonarQube Scanner)
                     if (hasSonar) {
                         echo "🔍 Running SonarQube Scanner for static analysis..."
                         try {
@@ -173,15 +146,8 @@ pipeline {
                         }
                     }
 
-                    // Determine overall security stage status
-                    if (env.TRIVY_SCAN_STATUS == 'PASSED' && env.SONAR_SCAN_STATUS == 'PASSED') {
-                        env.STAGE_SECURITY_STATUS = 'PASSED (Both Trivy & SonarQube executed)'
-                    } else if (env.TRIVY_SCAN_STATUS == 'PASSED' || env.SONAR_SCAN_STATUS == 'PASSED') {
-                        def missing = (env.TRIVY_SCAN_STATUS != 'PASSED') ? 'Trivy missing' : 'SonarQube missing'
-                        env.STAGE_SECURITY_STATUS = "PARTIAL (${missing})"
-                    } else {
-                        env.STAGE_SECURITY_STATUS = 'NOT_RUN (Both scanner tools missing)'
-                    }
+                    // Record stage security status
+                    env.STAGE_SECURITY_STATUS = (env.SONAR_SCAN_STATUS == 'PASSED') ? 'PASSED' : env.SONAR_SCAN_STATUS
                 }
             }
             post {
@@ -194,7 +160,7 @@ pipeline {
         }
 
         // ──────────────────────────────────────────────────────────────────────
-        // STAGE 4: Docker Containerization & Optional Registry Delivery
+        // STAGE 4: Docker Containerization, Security Scan & Optional Delivery
         // ──────────────────────────────────────────────────────────────────────
         stage('Docker Build & Package') {
             steps {
@@ -204,6 +170,54 @@ pipeline {
                         sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -t ${IMAGE_NAME}:latest ."
                     } else {
                         bat "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -t ${IMAGE_NAME}:latest ."
+                    }
+
+                    // ──────────────────────────────────────────────────────────
+                    // Trivy Container Image Vulnerability Scan
+                    // ──────────────────────────────────────────────────────────
+                    echo "🛡️ Scanning Docker image '${IMAGE_NAME}:${IMAGE_TAG}' with Trivy (aquasec/trivy:0.69.3)..."
+                    def trivyImage = 'aquasec/trivy:0.69.3'
+                    def targetImage = "${IMAGE_NAME}:${IMAGE_TAG}"
+                    def trivyExit = -1
+
+                    try {
+                        if (isUnix()) {
+                            // 1. Generate machine-readable JSON report and capture exit code (10 = findings, 0 = passed)
+                            trivyExit = sh(
+                                script: "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock:ro -v trivy-cache:/root/.cache/ ${trivyImage} image --image-src docker --scanners vuln --severity HIGH,CRITICAL --exit-code 10 --format json ${targetImage} > trivy-report.json",
+                                returnStatus: true
+                            )
+                            // 2. Display human-readable table in console log
+                            sh(script: "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock:ro -v trivy-cache:/root/.cache/ ${trivyImage} image --image-src docker --scanners vuln --severity HIGH,CRITICAL --format table ${targetImage}", returnStatus: true)
+                        } else {
+                            // 1. Generate machine-readable JSON report and capture exit code (10 = findings, 0 = passed)
+                            trivyExit = bat(
+                                script: "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache/ ${trivyImage} image --image-src docker --scanners vuln --severity HIGH,CRITICAL --exit-code 10 --format json ${targetImage} > trivy-report.json",
+                                returnStatus: true
+                            )
+                            // 2. Display human-readable table in console log
+                            bat(script: "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache/ ${trivyImage} image --image-src docker --scanners vuln --severity HIGH,CRITICAL --format table ${targetImage}", returnStatus: true)
+                        }
+
+                        if (trivyExit == 0) {
+                            env.TRIVY_SCAN_STATUS = 'PASSED'
+                            echo "✅ Trivy scan passed: 0 HIGH or CRITICAL vulnerabilities detected."
+                        } else if (trivyExit == 10) {
+                            env.TRIVY_SCAN_STATUS = 'FINDINGS'
+                            echo "[SECURITY] Trivy detected HIGH/CRITICAL vulnerabilities in ${targetImage} (report archived as trivy-report.json)."
+                        } else {
+                            env.TRIVY_SCAN_STATUS = 'ERROR'
+                            echo "[ERROR] Trivy scanner execution failed with exit code ${trivyExit}."
+                            if (env.REQUIRE_SECURITY_SCANS == 'true') {
+                                error("❌ Security Gate Failure: Trivy scan execution error (exit code: ${trivyExit}).")
+                            }
+                        }
+                    } catch (Exception e) {
+                        env.TRIVY_SCAN_STATUS = 'ERROR'
+                        echo "[ERROR] Unexpected failure running Trivy container: ${e.getMessage()}"
+                        if (env.REQUIRE_SECURITY_SCANS == 'true') {
+                            throw e
+                        }
                     }
 
                     // Optional Docker Hub publishing (strictly credential-based, zero secrets in command text)
@@ -241,6 +255,9 @@ pipeline {
                 }
             }
             post {
+                always {
+                    archiveArtifacts artifacts: 'trivy-report.json', allowEmptyArchive: true
+                }
                 failure {
                     script {
                         env.STAGE_DOCKER_STATUS = 'FAILED'
@@ -322,7 +339,7 @@ pipeline {
                 echo " 1. Source Checkout:      ${env.STAGE_CHECKOUT_STATUS ?: 'NOT_RUN'}"
                 echo " 2. Automated Tests:      ${env.STAGE_TESTS_STATUS ?: 'NOT_RUN'}"
                 echo " 3. Security & Quality:   ${env.STAGE_SECURITY_STATUS ?: 'NOT_RUN'}"
-                echo "    - Trivy (SCA):        ${env.TRIVY_SCAN_STATUS ?: 'NOT_RUN'}"
+                echo "    - Trivy (Image Scan): ${env.TRIVY_SCAN_STATUS ?: 'NOT_RUN'}"
                 echo "    - SonarQube (SAST):   ${env.SONAR_SCAN_STATUS ?: 'NOT_RUN'}"
                 echo " 4. Docker Build:         ${env.STAGE_DOCKER_STATUS ?: 'NOT_RUN'}"
                 echo " 5. Terraform Validation: ${env.STAGE_IAC_STATUS ?: 'NOT_RUN'}"
