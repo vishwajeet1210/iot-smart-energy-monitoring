@@ -36,16 +36,6 @@ pipeline {
         // Docker Hub Registry Settings (used only when PUBLISH_TO_DOCKERHUB is 'true')
         DOCKERHUB_CREDENTIALS_ID = 'dockerhub-credentials'
         DOCKERHUB_REPO           = 'vishwajeet1210/smart-energy-monitor'
-
-        // Stage & Tool Outcome Tracking (never hardcoded as SUCCESS)
-        STAGE_CHECKOUT_STATUS    = 'NOT_RUN'
-        STAGE_TESTS_STATUS       = 'NOT_RUN'
-        STAGE_SECURITY_STATUS    = 'NOT_RUN'
-        STAGE_DOCKER_STATUS      = 'NOT_RUN'
-        STAGE_IAC_STATUS         = 'NOT_RUN'
-
-        TRIVY_SCAN_STATUS        = 'NOT_RUN'
-        SONAR_SCAN_STATUS        = 'NOT_RUN'
     }
 
     stages {
@@ -55,6 +45,16 @@ pipeline {
         // ──────────────────────────────────────────────────────────────────────
         stage('Checkout SCM') {
             steps {
+                script {
+                    // Initialize stage and scanner outcome tracking imperatively in env
+                    env.STAGE_CHECKOUT_STATUS = 'NOT_RUN'
+                    env.STAGE_TESTS_STATUS    = 'NOT_RUN'
+                    env.STAGE_SECURITY_STATUS = 'NOT_RUN'
+                    env.STAGE_DOCKER_STATUS   = 'NOT_RUN'
+                    env.STAGE_IAC_STATUS      = 'NOT_RUN'
+                    env.TRIVY_SCAN_STATUS     = 'NOT_RUN'
+                    env.SONAR_SCAN_STATUS     = 'NOT_RUN'
+                }
                 echo "📥 Pulling latest source code from GitHub repository..."
                 checkout scm
                 script {
@@ -319,13 +319,13 @@ pipeline {
                 echo "========================================================================"
                 echo "                      PIPELINE EXECUTION SUMMARY                        "
                 echo "========================================================================"
-                echo " 1. Source Checkout:      ${env.STAGE_CHECKOUT_STATUS}"
-                echo " 2. Automated Tests:      ${env.STAGE_TESTS_STATUS}"
-                echo " 3. Security & Quality:   ${env.STAGE_SECURITY_STATUS}"
-                echo "    - Trivy (SCA):        ${env.TRIVY_SCAN_STATUS}"
-                echo "    - SonarQube (SAST):   ${env.SONAR_SCAN_STATUS}"
-                echo " 4. Docker Build:         ${env.STAGE_DOCKER_STATUS}"
-                echo " 5. Terraform Validation: ${env.STAGE_IAC_STATUS}"
+                echo " 1. Source Checkout:      ${env.STAGE_CHECKOUT_STATUS ?: 'NOT_RUN'}"
+                echo " 2. Automated Tests:      ${env.STAGE_TESTS_STATUS ?: 'NOT_RUN'}"
+                echo " 3. Security & Quality:   ${env.STAGE_SECURITY_STATUS ?: 'NOT_RUN'}"
+                echo "    - Trivy (SCA):        ${env.TRIVY_SCAN_STATUS ?: 'NOT_RUN'}"
+                echo "    - SonarQube (SAST):   ${env.SONAR_SCAN_STATUS ?: 'NOT_RUN'}"
+                echo " 4. Docker Build:         ${env.STAGE_DOCKER_STATUS ?: 'NOT_RUN'}"
+                echo " 5. Terraform Validation: ${env.STAGE_IAC_STATUS ?: 'NOT_RUN'}"
                 echo "========================================================================"
             }
         }
