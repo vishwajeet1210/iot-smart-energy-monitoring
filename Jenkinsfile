@@ -475,91 +475,111 @@ pipeline {
                 echo "🚀 Deploying updated container to EC2 instance '${env.EC2_INSTANCE_ID}' via AWS Systems Manager..."
                 script {
                     try {
-                        if (isUnix()) {
-                            sh """
-                                set -e
-                                echo "Sending SSM deployment command to instance ${EC2_INSTANCE_ID}..."
-                                CMD_ID=\$(docker run --rm -v "C:/Users/Vishwajeet/.aws:/root/.aws" -e AWS_REGION=${AWS_REGION} amazon/aws-cli ssm send-command \
-                                    --instance-ids "${EC2_INSTANCE_ID}" \
-                                    --document-name "AWS-RunShellScript" \
-                                    --parameters 'commands=[
-                                        "set -e",
-                                        "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}",
-                                        "docker pull ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}",
-                                        "if docker inspect ${APP_NAME} >/dev/null 2>&1; then docker stop ${APP_NAME} && docker rm ${APP_NAME}; fi",
-                                        "docker run -d --name ${APP_NAME} --restart unless-stopped -p 8501:8501 -v /var/data/energy:/app/data -e ENERGY_DB_DIR=/app/data -e ENERGY_DB_PATH=/app/data/energy.db ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}",
-                                        "for i in \\\$(seq 1 30); do STATUS=\\\$(docker inspect --format=\\"{{.State.Health.Status}}\\" ${APP_NAME} 2>/dev/null || true); if [ \\\"\\\$STATUS\\\" = \\\"healthy\\\" ]; then echo \\\"Container is healthy\\\"; break; fi; sleep 2; done",
-                                        "docker inspect --format=\\"Image: {{.Config.Image}} | ImageID: {{.Image}} | Status: {{.State.Status}} | Health: {{.State.Health.Status}}\\" ${APP_NAME}",
-                                        "ls -la /var/data/energy"
-                                    ]' \
-                                    --query "Command.CommandId" \
-                                    --output text)
+                        def ssmCommands = [
+                            "set -e",
+                            "echo 'Starting container deployment on EC2...'",
+                            "aws ecr get-login-password --region ${env.AWS_REGION} | docker login --username AWS --password-stdin ${env.ECR_REGISTRY}",
+                            "docker pull ${env.ECR_REGISTRY}/${env.ECR_REPO}:${env.IMAGE_TAG}",
+                            "if docker inspect ${env.APP_NAME} >/dev/null 2>&1; then docker stop ${env.APP_NAME} && docker rm ${env.APP_NAME}; fi",
+                            "docker run -d --name ${env.APP_NAME} --restart unless-stopped -p 8501:8501 -v /var/data/energy:/app/data -e ENERGY_DB_DIR=/app/data -e ENERGY_DB_PATH=/app/data/energy.db ${env.ECR_REGISTRY}/${env.ECR_REPO}:${env.IMAGE_TAG}",
+                            "i=1",
+                            "while [ \"\$i\" -le 30 ]; do STATUS=\$(docker inspect --format='{{.State.Health.Status}}' ${env.APP_NAME} 2>/dev/null || true); if [ \"\$STATUS\" = 'healthy' ]; then echo \"Container is healthy after \$i attempts\"; break; fi; sleep 2; i=\$((i + 1)); done",
+                            "STATUS=\$(docker inspect --format='{{.State.Health.Status}}' ${env.APP_NAME} 2>/dev/null || true)",
+                            "if [ \"\$STATUS\" != 'healthy' ]; then echo \"ERROR: Container failed healthcheck. Status: \$STATUS\"; docker logs ${env.APP_NAME} || true; exit 1; fi",
+                            "curl -s -f http://localhost:8501/_stcore/health",
+                            "docker inspect --format='Image: {{.Config.Image}} | ImageID: {{.Image}} | Status: {{.State.Status}} | Health: {{.State.Health.Status}}' ${env.APP_NAME}",
+                            "ls -la /var/data/energy"
+                        ]
+                        def ssmParamsJson = groovy.json.JsonOutput.toJson([commands: ssmCommands])
 
-                                echo "SSM Command dispatched: \${CMD_ID}. Awaiting execution..."
-                                sleep 10
-                                for i in \$(seq 1 15); do
-                                    STATUS=\$(docker run --rm -v "C:/Users/Vishwajeet/.aws:/root/.aws" -e AWS_REGION=${AWS_REGION} amazon/aws-cli ssm get-command-invocation \
-                                        --command-id "\${CMD_ID}" \
-                                        --instance-id "${EC2_INSTANCE_ID}" \
-                                        --query "Status" \
-                                        --output text 2>/dev/null || echo "Pending")
-                                    if [ "\$STATUS" = "Success" ]; then
-                                        echo "SSM Deployment command completed successfully."
-                                        break
-                                    elif [ "\$STATUS" = "Failed" ]; then
-                                        echo "ERROR: SSM Deployment command failed."
-                                        docker run --rm -v "C:/Users/Vishwajeet/.aws:/root/.aws" -e AWS_REGION=${AWS_REGION} amazon/aws-cli ssm get-command-invocation \
-                                            --command-id "\${CMD_ID}" \
-                                            --instance-id "${EC2_INSTANCE_ID}"
+                        if (isUnix()) {
+                            withEnv(["SSM_PAYLOAD=${ssmParamsJson}"]) {
+                                sh '''
+                                    set -e
+                                    echo "Dispatching SSM deployment command to instance ${EC2_INSTANCE_ID}..."
+                                    CMD_ID=$(docker run --rm -v "C:/Users/Vishwajeet/.aws:/root/.aws" -e AWS_REGION="${AWS_REGION}" amazon/aws-cli ssm send-command \
+                                        --instance-ids "${EC2_INSTANCE_ID}" \
+                                        --document-name "AWS-RunShellScript" \
+                                        --parameters "${SSM_PAYLOAD}" \
+                                        --query "Command.CommandId" \
+                                        --output text)
+
+                                    echo "SSM Command dispatched: ${CMD_ID}. Awaiting execution..."
+                                    sleep 10
+                                    for i in $(seq 1 15); do
+                                        STATUS=$(docker run --rm -v "C:/Users/Vishwajeet/.aws:/root/.aws" -e AWS_REGION="${AWS_REGION}" amazon/aws-cli ssm get-command-invocation \
+                                            --command-id "${CMD_ID}" \
+                                            --instance-id "${EC2_INSTANCE_ID}" \
+                                            --query "Status" \
+                                            --output text 2>/dev/null || echo "Pending")
+                                        if [ "$STATUS" = "Success" ]; then
+                                            echo "SSM Deployment command completed successfully."
+                                            break
+                                        elif [ "$STATUS" = "Failed" ]; then
+                                            echo "ERROR: SSM Deployment command failed."
+                                            docker run --rm -v "C:/Users/Vishwajeet/.aws:/root/.aws" -e AWS_REGION="${AWS_REGION}" amazon/aws-cli ssm get-command-invocation \
+                                                --command-id "${CMD_ID}" \
+                                                --instance-id "${EC2_INSTANCE_ID}"
+                                            exit 1
+                                        fi
+                                        echo "SSM execution status: $STATUS (waiting...)"
+                                        sleep 4
+                                    done
+
+                                    if [ "$STATUS" != "Success" ]; then
+                                        echo "ERROR: SSM deployment timed out or ended with status: $STATUS"
+                                        docker run --rm -v "C:/Users/Vishwajeet/.aws:/root/.aws" -e AWS_REGION="${AWS_REGION}" amazon/aws-cli ssm get-command-invocation \
+                                            --command-id "${CMD_ID}" \
+                                            --instance-id "${EC2_INSTANCE_ID}" 2>/dev/null || true
                                         exit 1
                                     fi
-                                    echo "SSM execution status: \$STATUS (waiting...)"
-                                    sleep 4
-                                done
 
-                                echo "Verifying HTTP health endpoint: ${APP_URL}/_stcore/health..."
-                                python3 -c "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('${APP_URL}/_stcore/health', timeout=10).getcode() == 200 else 1)"
-                            """
+                                    echo "Verifying external HTTP health endpoint: ${APP_URL}/_stcore/health..."
+                                    python3 -c "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('${APP_URL}/_stcore/health', timeout=10).getcode() == 200 else 1)"
+                                '''
+                            }
                         } else {
-                            powershell """
-                                Write-Host "Sending SSM deployment command to instance ${env.EC2_INSTANCE_ID}..."
-                                \$cmdId = docker run --rm -v "\${env:USERPROFILE}\\.aws:/root/.aws" -e AWS_REGION=${env.AWS_REGION} amazon/aws-cli ssm send-command `
-                                    --instance-ids "${env.EC2_INSTANCE_ID}" `
-                                    --document-name "AWS-RunShellScript" `
-                                    --parameters 'commands=[
-                                        "set -e",
-                                        "aws ecr get-login-password --region ${env.AWS_REGION} | docker login --username AWS --password-stdin ${env.ECR_REGISTRY}",
-                                        "docker pull ${env.ECR_REGISTRY}/${env.ECR_REPO}:${env.IMAGE_TAG}",
-                                        "if docker inspect ${env.APP_NAME} >/dev/null 2>&1; then docker stop ${env.APP_NAME} && docker rm ${env.APP_NAME}; fi",
-                                        "docker run -d --name ${env.APP_NAME} --restart unless-stopped -p 8501:8501 -v /var/data/energy:/app/data -e ENERGY_DB_DIR=/app/data -e ENERGY_DB_PATH=/app/data/energy.db ${env.ECR_REGISTRY}/${env.ECR_REPO}:${env.IMAGE_TAG}",
-                                        "for i in \\\$(seq 1 30); do STATUS=\\\$(docker inspect --format=\\"{{.State.Health.Status}}\\" ${env.APP_NAME} 2>/dev/null || true); if [ \\\"\\\$STATUS\\\" = \\\"healthy\\\" ]; then echo \\\"Container is healthy\\\"; break; fi; sleep 2; done",
-                                        "docker inspect --format=\\"Image: {{.Config.Image}} | ImageID: {{.Image}} | Status: {{.State.Status}} | Health: {{.State.Health.Status}}\\" ${env.APP_NAME}",
-                                        "ls -la /var/data/energy"
-                                    ]' `
-                                    --query "Command.CommandId" `
-                                    --output text
-
-                                Write-Host "SSM Command dispatched: \$cmdId. Awaiting execution..."
-                                Start-Sleep -Seconds 10
-                                for (\$i = 1; \$i -le 15; \$i++) {
-                                    \$status = docker run --rm -v "\${env:USERPROFILE}\\.aws:/root/.aws" -e AWS_REGION=${env.AWS_REGION} amazon/aws-cli ssm get-command-invocation `
-                                        --command-id "\$cmdId" `
-                                        --instance-id "${env.EC2_INSTANCE_ID}" `
-                                        --query "Status" `
+                            withEnv(["SSM_PAYLOAD=${ssmParamsJson}"]) {
+                                powershell '''
+                                    Write-Host "Dispatching SSM deployment command to instance ${env:EC2_INSTANCE_ID}..."
+                                    $safePayload = $env:SSM_PAYLOAD.Replace('"', '\"')
+                                    $cmdId = docker run --rm -v "${env:USERPROFILE}\\.aws:/root/.aws" -e AWS_REGION="${env:AWS_REGION}" amazon/aws-cli ssm send-command `
+                                        --instance-ids "${env:EC2_INSTANCE_ID}" `
+                                        --document-name "AWS-RunShellScript" `
+                                        --parameters "$safePayload" `
+                                        --query "Command.CommandId" `
                                         --output text
-                                    if (\$status -eq "Success") {
-                                        Write-Host "SSM Deployment command completed successfully."
-                                        break
-                                    } elseif (\$status -eq "Failed") {
-                                        Write-Error "ERROR: SSM Deployment command failed."
+
+                                    Write-Host "SSM Command dispatched: $cmdId. Awaiting execution..."
+                                    Start-Sleep -Seconds 10
+                                    for ($i = 1; $i -le 15; $i++) {
+                                        $status = docker run --rm -v "${env:USERPROFILE}\\.aws:/root/.aws" -e AWS_REGION="${env:AWS_REGION}" amazon/aws-cli ssm get-command-invocation `
+                                            --command-id "$cmdId" `
+                                            --instance-id "${env:EC2_INSTANCE_ID}" `
+                                            --query "Status" `
+                                            --output text
+                                        if ($status -eq "Success") {
+                                            Write-Host "SSM Deployment command completed successfully."
+                                            break
+                                        } elseif ($status -eq "Failed") {
+                                            Write-Error "ERROR: SSM Deployment command failed."
+                                            docker run --rm -v "${env:USERPROFILE}\\.aws:/root/.aws" -e AWS_REGION="${env:AWS_REGION}" amazon/aws-cli ssm get-command-invocation `
+                                                --command-id "$cmdId" `
+                                                --instance-id "${env:EC2_INSTANCE_ID}"
+                                            exit 1
+                                        }
+                                        Start-Sleep -Seconds 4
+                                    }
+
+                                    if ($status -ne "Success") {
+                                        Write-Error "ERROR: SSM deployment timed out or ended with status: $status"
                                         exit 1
                                     }
-                                    Start-Sleep -Seconds 4
-                                }
 
-                                Write-Host "Verifying HTTP health endpoint: ${env.APP_URL}/_stcore/health..."
-                                curl.exe -s -f --connect-timeout 10 "${env.APP_URL}/_stcore/health"
-                            """
+                                    Write-Host "Verifying external HTTP health endpoint: ${env:APP_URL}/_stcore/health..."
+                                    curl.exe -s -f --connect-timeout 10 "${env:APP_URL}/_stcore/health"
+                                '''
+                            }
                         }
                         env.STAGE_DEPLOY_STATUS = 'PASSED'
                         echo "✅ Application successfully deployed and verified on EC2: ${env.APP_URL}"
