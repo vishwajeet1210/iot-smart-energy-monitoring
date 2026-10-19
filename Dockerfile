@@ -26,10 +26,10 @@ WORKDIR /app
 
 # Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --only-binary :all: -r requirements.txt
 
 # Copy application source code and configuration
-COPY . .
+COPY alerts.py analytics.py app.py config.py database.py iot_simulator.py ./
 
 # Prepare data directory for SQLite persistence with appuser ownership
 RUN mkdir -p /app/data && chown -R appuser:appuser /app

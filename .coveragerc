@@ -1,0 +1,9 @@
+[run]
+relative_files = True
+source = .
+omit =
+    tests/*
+    scripts/*
+    security/*
+    .venv/*
+    setup.py

@@ -677,3 +677,53 @@ class TestDeploymentRollbackBehavioral:
         assert "WARNING: Failed to remove backup container." in stdout
         assert "Initiating rollback" not in stdout, "Rollback must not be triggered during cleanup"
         assert "Deployment finalized successfully." in stdout
+
+
+class TestSonarCloudQualityGateConfig:
+    """Regression tests verifying SonarCloud Quality Gate, coverage ingestion, and SAST hardening."""
+
+    def test_coveragerc_exists_and_uses_relative_files(self):
+        """Ensure .coveragerc configures relative_files for cross-platform Docker scanner compatibility."""
+        coveragerc_path = os.path.join(ROOT_DIR, ".coveragerc")
+        assert os.path.isfile(coveragerc_path), ".coveragerc must exist"
+        with open(coveragerc_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "relative_files = True" in content or "relative_files=True" in content
+        assert "scripts/*" in content, "scripts/* must be omitted from coverage"
+        assert "tests/*" in content, "tests/* must be omitted from coverage"
+
+    def test_sonar_project_properties_exclusions_and_reports(self):
+        """Ensure sonar-project.properties declares coverage path, excludes utility scripts and tests."""
+        props_path = os.path.join(ROOT_DIR, "sonar-project.properties")
+        assert os.path.isfile(props_path)
+        with open(props_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "sonar.python.coverage.reportPaths=coverage.xml" in content
+        assert "scripts/**" in content, "scripts/** must be in sonar.exclusions"
+        assert "sonar.coverage.exclusions=scripts/**" in content
+        assert "sonar.qualitygate.wait=true" in content
+
+    def test_jenkinsfile_coverage_validation_and_scanner_flags(self):
+        """Ensure Jenkinsfile validates coverage.xml before scan and passes explicit coverage reportPaths."""
+        jenkinsfile_path = os.path.join(ROOT_DIR, "Jenkinsfile")
+        with open(jenkinsfile_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "fileExists('coverage.xml')" in content
+        assert "-Dsonar.python.coverage.reportPaths=coverage.xml" in content
+        assert "sh '''" in content, "Must use single-quoted multiline string to avoid Groovy escaping syntax warning"
+
+    def test_dockerfile_least_privilege_and_wheel_install(self):
+        """Ensure Dockerfile installs only binary wheels and copies only production application files."""
+        dockerfile_path = os.path.join(ROOT_DIR, "Dockerfile")
+        with open(dockerfile_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "--only-binary :all:" in content, "Dockerfile pip install must enforce binary wheels"
+        assert "COPY . ." not in content, "Dockerfile must not use recursive COPY . ."
+        assert "COPY alerts.py analytics.py app.py config.py database.py iot_simulator.py ./" in content
+
+    def test_terraform_mumbai_associates_public_ip_for_reachability(self):
+        """Ensure terraform/mumbai/main.tf maintains public IP assignment for instance reachability."""
+        tf_path = os.path.join(ROOT_DIR, "terraform", "mumbai", "main.tf")
+        with open(tf_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "associate_public_ip_address = true" in content

@@ -206,24 +206,34 @@ pipeline {
                         hasSonarCli = (bat(script: 'where sonar-scanner >nul 2>nul', returnStatus: true) == 0)
                     }
 
+                    // Validate coverage report existence and content before scanning
+                    if (!fileExists('coverage.xml')) {
+                        error("❌ Coverage Gate Failure: 'coverage.xml' is missing. Run unit testing with coverage before static analysis.")
+                    }
+                    def covContent = readFile('coverage.xml').trim()
+                    if (covContent.length() == 0 || !covContent.contains('<coverage')) {
+                        error("❌ Coverage Gate Failure: 'coverage.xml' is empty or invalid.")
+                    }
+                    echo "✅ Validated coverage report 'coverage.xml' (${covContent.length()} characters)."
+
                     // Static Code Analysis (SAST via SonarCloud)
                     if (hasDocker) {
                         echo "🔍 Running SonarCloud static analysis via sonarsource/sonar-scanner-cli:latest..."
-                        def sonarImage = 'sonarsource/sonar-scanner-cli:latest'
                         try {
                             withCredentials([string(credentialsId: env.SONAR_CREDENTIALS_ID, variable: 'SONAR_TOKEN')]) {
                                 if (isUnix()) {
-                                    sh """
-                                        if [ -n "\$JENKINS_HOME" ] && command -v hostname >/dev/null 2>&1 && docker inspect "\$(hostname)" >/dev/null 2>&1; then
-                                            docker run --rm --volumes-from "\$(hostname)" -w "\${PWD}" -e SONAR_TOKEN ${sonarImage} "-Dsonar.host.url=https://sonarcloud.io"
+                                    sh '''
+                                        if [ -n "$JENKINS_HOME" ] && command -v hostname >/dev/null 2>&1 && docker inspect "$(hostname)" >/dev/null 2>&1; then
+                                            docker run --rm --volumes-from "$(hostname)" -w "${PWD}" -e SONAR_TOKEN sonarsource/sonar-scanner-cli:latest -Dsonar.host.url=https://sonarcloud.io -Dsonar.python.coverage.reportPaths=coverage.xml
                                         else
-                                            docker run --rm -v "\${PWD}:/usr/src" -w /usr/src -e SONAR_TOKEN ${sonarImage} "-Dsonar.host.url=https://sonarcloud.io"
+                                            docker run --rm -v "${PWD}:/usr/src" -w /usr/src -e SONAR_TOKEN sonarsource/sonar-scanner-cli:latest -Dsonar.host.url=https://sonarcloud.io -Dsonar.python.coverage.reportPaths=coverage.xml
                                         fi
-                                    """
+                                    '''
                                 } else {
-                                    powershell """
-                                        docker run --rm -v "\${PWD}:/usr/src" -w /usr/src -e SONAR_TOKEN ${sonarImage} "-Dsonar.host.url=https://sonarcloud.io"
-                                    """
+                                    powershell '''
+                                        $ws = if ($env:WORKSPACE) { $env:WORKSPACE } else { (Get-Location).Path }
+                                        docker run --rm -v "${ws}:/usr/src" -w /usr/src -e SONAR_TOKEN sonarsource/sonar-scanner-cli:latest -Dsonar.host.url=https://sonarcloud.io -Dsonar.python.coverage.reportPaths=coverage.xml
+                                    '''
                                 }
                                 env.SONAR_SCAN_STATUS = 'PASSED'
                                 echo "✅ SonarCloud static analysis passed."
@@ -247,9 +257,9 @@ pipeline {
                         try {
                             withCredentials([string(credentialsId: env.SONAR_CREDENTIALS_ID, variable: 'SONAR_TOKEN')]) {
                                 if (isUnix()) {
-                                    sh 'sonar-scanner -Dproject.settings=sonar-project.properties -Dsonar.host.url=https://sonarcloud.io'
+                                    sh 'sonar-scanner -Dproject.settings=sonar-project.properties -Dsonar.host.url=https://sonarcloud.io -Dsonar.python.coverage.reportPaths=coverage.xml'
                                 } else {
-                                    bat 'sonar-scanner -Dproject.settings=sonar-project.properties -Dsonar.host.url=https://sonarcloud.io'
+                                    bat 'sonar-scanner -Dproject.settings=sonar-project.properties -Dsonar.host.url=https://sonarcloud.io -Dsonar.python.coverage.reportPaths=coverage.xml'
                                 }
                                 env.SONAR_SCAN_STATUS = 'PASSED'
                                 echo "✅ SonarCloud static analysis passed."
