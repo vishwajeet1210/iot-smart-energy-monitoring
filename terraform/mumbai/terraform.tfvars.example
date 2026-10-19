@@ -1,0 +1,33 @@
+# ==============================================================================
+# Terraform Variables Example - AWS Mumbai Deployment (ap-south-1)
+# Copy to terraform.tfvars and customize with your parameters
+# ==============================================================================
+
+aws_region            = "ap-south-1"
+aws_account_id        = "695496430374"
+environment           = "dev"
+project_name          = "smart-energy-monitor"
+instance_type         = "t3.small"
+app_port              = 8501
+
+# Dedicated VPC CIDR (10.1.0.0/16 avoids collision with Sydney 10.0.0.0/16)
+vpc_cidr              = "10.1.0.0/16"
+public_subnet_cidr    = "10.1.1.0/24"
+
+# In production, restrict this to your specific IP or corporate VPN CIDR, e.g., ["203.0.113.50/32"]
+allowed_ingress_cidrs = ["0.0.0.0/0"]
+
+# Set to true only if direct SSH access is strictly required (SSM is already enabled)
+enable_ssh            = false
+admin_cidr            = ["127.0.0.1/32"]
+ssh_key_name          = ""
+
+# Create private Amazon ECR repository in ap-south-1
+create_ecr_repository = true
+
+# Optional: Override image URI. If left empty (""), defaults to:
+# 695496430374.dkr.ecr.ap-south-1.amazonaws.com/smart-energy-monitor:latest
+docker_image          = ""
+
+# Optional: Specific AMI ID in ap-south-1. If empty, automated Canonical Ubuntu 22.04 LTS lookup is used.
+custom_ami_id         = ""

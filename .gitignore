@@ -77,3 +77,11 @@ REPORT_MATERIALS/
 *.sublime-workspace
 .DS_Store
 Thumbs.db
+
+# Local Terraform state, plans, and downloaded providers
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform.tfvars
+terraform.tfvars.json

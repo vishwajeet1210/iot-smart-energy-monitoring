@@ -26,18 +26,42 @@ pipeline {
         buildDiscarder(logRotator(numToKeepStr: '10'))
     }
 
+    parameters {
+        choice(
+            name: 'DEPLOY_REGION',
+            choices: ['ap-south-1'],
+            description: 'Target AWS deployment region (AWS Mumbai ap-south-1 is the only permitted deployment target)'
+        )
+        string(
+            name: 'MUMBAI_EC2_INSTANCE_ID',
+            defaultValue: 'i-07025008dd9b165a8',
+            description: 'Target EC2 Instance ID in Mumbai (ap-south-1)'
+        )
+        string(
+            name: 'MUMBAI_APP_URL',
+            defaultValue: 'http://3.110.85.209:8501',
+            description: 'Public Application URL for Mumbai (ap-south-1)'
+        )
+        string(
+            name: 'MUMBAI_ECR_REGISTRY',
+            defaultValue: '695496430374.dkr.ecr.ap-south-1.amazonaws.com',
+            description: 'Amazon ECR Registry URI for Mumbai (ap-south-1)'
+        )
+    }
+
     environment {
         APP_NAME                 = 'smart-energy-monitor'
         IMAGE_NAME               = 'smart-energy-monitor'
         IMAGE_TAG                = "${env.BUILD_NUMBER ?: 'latest'}"
         PYTHONUNBUFFERED         = '1'
 
-        // AWS & Amazon ECR Settings
-        AWS_REGION               = 'ap-southeast-2'
-        ECR_REGISTRY             = '695496430374.dkr.ecr.ap-southeast-2.amazonaws.com'
+        // AWS & Amazon ECR Settings (Mumbai ap-south-1 is the sole permitted target)
+        AWS_REGION               = 'ap-south-1'
+        ECR_REGISTRY             = '695496430374.dkr.ecr.ap-south-1.amazonaws.com'
         ECR_REPO                 = 'smart-energy-monitor'
-        EC2_INSTANCE_ID          = 'i-06e85f034d1c71c9c'
-        APP_URL                  = 'http://13.210.96.204:8501'
+        EC2_INSTANCE_ID          = 'i-07025008dd9b165a8'
+        APP_URL                  = 'http://3.110.85.209:8501'
+        TF_WORKING_DIR           = 'terraform/mumbai'
 
         // Pipeline Behavior Flags
         REQUIRE_SECURITY_SCANS   = 'false' // Set to 'true' to fail build if security tools are missing
@@ -72,6 +96,44 @@ pipeline {
                     env.STAGE_DEPLOY_STATUS   = 'NOT_RUN'
                     env.TRIVY_SCAN_STATUS     = 'NOT_RUN'
                     env.SONAR_SCAN_STATUS     = 'NOT_RUN'
+
+                    // Validate deployment target region (Mumbai ap-south-1 is strictly required)
+                    def selectedRegion = (params.DEPLOY_REGION?.trim()) ?: 'ap-south-1'
+                    echo "🌍 Selected Deployment Region: ${selectedRegion}"
+                    if (selectedRegion != 'ap-south-1') {
+                        error("❌ Deployment Gate Failure: Target region '${selectedRegion}' is rejected. AWS Mumbai ('ap-south-1') is the only permitted deployment target.")
+                    }
+
+                    // Strict Target Validation: Prevent parameter tampering or redirection
+                    def selectedInstance = (params.MUMBAI_EC2_INSTANCE_ID?.trim()) ?: 'i-07025008dd9b165a8'
+                    if (selectedInstance != 'i-07025008dd9b165a8') {
+                        error("❌ Deployment Gate Failure: Target EC2 instance '${selectedInstance}' is rejected. Expected verified Mumbai EC2 instance 'i-07025008dd9b165a8'.")
+                    }
+
+                    def selectedRegistry = (params.MUMBAI_ECR_REGISTRY?.trim()) ?: '695496430374.dkr.ecr.ap-south-1.amazonaws.com'
+                    if (selectedRegistry != '695496430374.dkr.ecr.ap-south-1.amazonaws.com') {
+                        error("❌ Deployment Gate Failure: Target ECR registry '${selectedRegistry}' is rejected. Expected verified Mumbai ECR registry '695496430374.dkr.ecr.ap-south-1.amazonaws.com'.")
+                    }
+
+                    def selectedUrl = (params.MUMBAI_APP_URL?.trim()) ?: 'http://3.110.85.209:8501'
+                    if (selectedUrl != 'http://3.110.85.209:8501') {
+                        error("❌ Deployment Gate Failure: Target application URL '${selectedUrl}' is rejected. Expected verified Mumbai application URL 'http://3.110.85.209:8501'.")
+                    }
+
+                    // Configure verified Mumbai environment settings
+                    env.AWS_REGION      = 'ap-south-1'
+                    env.ECR_REGISTRY    = '695496430374.dkr.ecr.ap-south-1.amazonaws.com'
+                    env.ECR_REPO        = 'smart-energy-monitor'
+                    env.EC2_INSTANCE_ID = 'i-07025008dd9b165a8'
+                    env.APP_URL         = 'http://3.110.85.209:8501'
+                    env.TF_WORKING_DIR  = 'terraform/mumbai'
+
+                    echo "📍 Target Region: AWS Mumbai (ap-south-1) [MANDATORY & EXCLUSIVE]"
+                    echo "📦 Target ECR Registry: ${env.ECR_REGISTRY}"
+                    echo "🏷️ Target ECR Repository: ${env.ECR_REPO}"
+                    echo "🏗️ Target Terraform Directory: ${env.TF_WORKING_DIR}"
+                    echo "🖥️ Target EC2 Instance ID: ${env.EC2_INSTANCE_ID}"
+                    echo "🌐 Target Application URL: ${env.APP_URL}"
                 }
                 echo "📥 Pulling latest source code from GitHub repository..."
                 checkout scm
@@ -291,6 +353,9 @@ pipeline {
 
                     // Amazon ECR publishing
                     if (env.PUBLISH_TO_ECR == 'true') {
+                        if (env.AWS_REGION != 'ap-south-1' || env.ECR_REGISTRY != '695496430374.dkr.ecr.ap-south-1.amazonaws.com' || env.ECR_REPO != 'smart-energy-monitor') {
+                            error("❌ Target Gate Failure: Pushing to '${env.ECR_REGISTRY}/${env.ECR_REPO}' in '${env.AWS_REGION}' is rejected. Only verified Mumbai ECR is permitted.")
+                        }
                         echo "🔑 PUBLISH_TO_ECR=true. Authenticating and pushing to Amazon ECR (${env.ECR_REGISTRY})..."
                         try {
                             if (isUnix()) {
@@ -369,19 +434,22 @@ pipeline {
             steps {
                 echo "🏗️ Validating Terraform Infrastructure as Code definitions..."
                 script {
+                    def targetTfDir = env.TF_WORKING_DIR ?: 'terraform'
+                    echo "🏗️ Target Terraform configuration directory: ${targetTfDir}"
+
                     // Verify configuration and directory exist before entering
-                    if (!fileExists('terraform') || !fileExists('terraform/main.tf')) {
+                    if (!fileExists(targetTfDir) || !fileExists("${targetTfDir}/main.tf")) {
                         if (env.REQUIRE_IAC_VALIDATION == 'true') {
-                            error("❌ IaC Gate Failure: Terraform directory or configuration ('terraform/main.tf') is missing.")
+                            error("❌ IaC Gate Failure: Terraform directory or configuration ('${targetTfDir}/main.tf') is missing.")
                         } else {
-                            echo "[WARNING] Terraform directory or configuration ('terraform/main.tf') not found."
+                            echo "[WARNING] Terraform directory or configuration ('${targetTfDir}/main.tf') not found."
                             echo "[STATUS] IaC validation: NOT RUN (Prerequisite configuration missing)"
                             env.STAGE_IAC_STATUS = 'NOT_RUN (Files missing)'
                             return
                         }
                     }
 
-                    dir('terraform') {
+                    dir(targetTfDir) {
                         def hasDocker    = false
                         def hasTerraform = false
 
@@ -472,23 +540,53 @@ pipeline {
                 expression { env.DEPLOY_TO_EC2 == 'true' }
             }
             steps {
-                echo "🚀 Deploying updated container to EC2 instance '${env.EC2_INSTANCE_ID}' via AWS Systems Manager..."
                 script {
+                    if (env.AWS_REGION != 'ap-south-1') {
+                        error("❌ Deployment Gate Failure: Target AWS_REGION is '${env.AWS_REGION}'. Only AWS Mumbai ('ap-south-1') is permitted.")
+                    }
+                    if (!env.EC2_INSTANCE_ID || env.EC2_INSTANCE_ID != 'i-07025008dd9b165a8') {
+                        error("❌ Deployment Gate Failure: Target EC2_INSTANCE_ID is '${env.EC2_INSTANCE_ID}'. Expected verified Mumbai EC2 instance 'i-07025008dd9b165a8'.")
+                    }
+                    if (env.ECR_REGISTRY != '695496430374.dkr.ecr.ap-south-1.amazonaws.com') {
+                        error("❌ Deployment Gate Failure: Target ECR_REGISTRY is '${env.ECR_REGISTRY}'. Expected verified Mumbai ECR registry '695496430374.dkr.ecr.ap-south-1.amazonaws.com'.")
+                    }
+                    if (env.APP_URL != 'http://3.110.85.209:8501') {
+                        error("❌ Deployment Gate Failure: Target APP_URL is '${env.APP_URL}'. Expected verified Mumbai application URL 'http://3.110.85.209:8501'.")
+                    }
+                    echo "🚀 Deploying updated container to EC2 instance '${env.EC2_INSTANCE_ID}' in Mumbai ('${env.AWS_REGION}') via AWS Systems Manager..."
                     try {
                         def ssmCommands = [
                             "set -e",
-                            "echo 'Starting container deployment on EC2...'",
+                            "echo 'Starting safe container deployment on EC2 (${env.AWS_REGION})...'",
+                            "DEPLOY_SUCCESS=0",
+                            "ROLLBACK_TRIGGERED=0",
+                            "ROLLBACK_SUCCESS=0",
+                            "BACKUP_PRESERVED=0",
+                            "rollback() { if [ \"\$ROLLBACK_TRIGGERED\" -eq 1 ]; then if [ \"\$ROLLBACK_SUCCESS\" -eq 1 ]; then return 0; else exit 1; fi; fi; ROLLBACK_TRIGGERED=1; echo 'Initiating rollback to previous working container...'; if docker inspect ${env.APP_NAME} >/dev/null 2>&1; then echo 'Stopping and removing failed replacement container...'; docker stop ${env.APP_NAME} >/dev/null 2>&1 || true; docker rm -f ${env.APP_NAME} >/dev/null 2>&1 || true; fi; TARGET_BACKUP=''; if docker inspect ${env.APP_NAME}-newbackup >/dev/null 2>&1; then TARGET_BACKUP='${env.APP_NAME}-newbackup'; elif docker inspect ${env.APP_NAME}-backup >/dev/null 2>&1; then TARGET_BACKUP='${env.APP_NAME}-backup'; fi; if [ -n \"\$TARGET_BACKUP\" ]; then echo \"Restoring previous working container from \$TARGET_BACKUP...\"; if ! docker rename \"\$TARGET_BACKUP\" ${env.APP_NAME}; then echo \"CRITICAL: Rollback failed - could not rename \$TARGET_BACKUP to ${env.APP_NAME}. Recovery container \$TARGET_BACKUP preserved.\"; exit 1; fi; if ! docker start ${env.APP_NAME}; then echo \"CRITICAL: Rollback failed - could not start restored container ${env.APP_NAME}. Recovery container preserved.\"; exit 1; fi; echo 'Awaiting health check on restored container ${env.APP_NAME}...'; R_HEALTHY=0; for r in \$(seq 1 30); do R_STATUS=\$(docker inspect --format='{{.State.Health.Status}}' ${env.APP_NAME} 2>/dev/null || echo 'starting'); if [ \"\$R_STATUS\" = 'healthy' ]; then R_HEALTHY=1; echo \"Restored container is healthy after \$r attempts.\"; break; fi; sleep 2; done; if [ \"\$R_HEALTHY\" -ne 1 ]; then echo \"CRITICAL: Rollback verification failed - restored container failed health check (status: \$R_STATUS). Recovery container preserved.\"; docker logs ${env.APP_NAME} || true; exit 1; fi; if ! curl -s -f --max-time 5 http://localhost:8501/_stcore/health >/dev/null 2>&1; then echo 'CRITICAL: Rollback verification failed - restored container failed HTTP health check. Recovery container preserved.'; docker logs ${env.APP_NAME} || true; exit 1; fi; ROLLBACK_SUCCESS=1; echo '[SUCCESS] Previous working container successfully restored and verified healthy.'; else if [ \"\$BACKUP_PRESERVED\" -eq 1 ]; then echo 'CRITICAL: Rollback failed - expected preserved backup container but none was found.'; exit 1; else echo 'No backup container to restore (first deployment without previous container).'; exit 1; fi; fi; }",
+                            "trap 'EXIT_CODE=\$?; if [ \"\$DEPLOY_SUCCESS\" -ne 1 ]; then if [ \"\$ROLLBACK_TRIGGERED\" -eq 0 ]; then if [ \"\$BACKUP_PRESERVED\" -eq 1 ]; then echo \"Unexpected failure or interruption (exit code \$EXIT_CODE). Triggering rollback...\"; rollback; fi; fi; if [ \"\$BACKUP_PRESERVED\" -eq 1 ] && [ \"\$ROLLBACK_SUCCESS\" -ne 1 ]; then echo \"CRITICAL: Deployment failed and rollback was unsuccessful (exit code \$EXIT_CODE). Recovery container preserved.\"; fi; if [ \"\$EXIT_CODE\" -eq 0 ]; then EXIT_CODE=1; fi; exit \$EXIT_CODE; fi' EXIT",
                             "aws ecr get-login-password --region ${env.AWS_REGION} | docker login --username AWS --password-stdin ${env.ECR_REGISTRY}",
+                            "echo 'Pulling target image ${env.ECR_REGISTRY}/${env.ECR_REPO}:${env.IMAGE_TAG}...'",
                             "docker pull ${env.ECR_REGISTRY}/${env.ECR_REPO}:${env.IMAGE_TAG}",
-                            "if docker inspect ${env.APP_NAME} >/dev/null 2>&1; then docker stop ${env.APP_NAME} && docker rm ${env.APP_NAME}; fi",
-                            "docker run -d --name ${env.APP_NAME} --restart unless-stopped -p 8501:8501 -v /var/data/energy:/app/data -e ENERGY_DB_DIR=/app/data -e ENERGY_DB_PATH=/app/data/energy.db ${env.ECR_REGISTRY}/${env.ECR_REPO}:${env.IMAGE_TAG}",
-                            "i=1",
-                            "while [ \"\$i\" -le 30 ]; do STATUS=\$(docker inspect --format='{{.State.Health.Status}}' ${env.APP_NAME} 2>/dev/null || true); if [ \"\$STATUS\" = 'healthy' ]; then echo \"Container is healthy after \$i attempts\"; break; fi; sleep 2; i=\$((i + 1)); done",
-                            "STATUS=\$(docker inspect --format='{{.State.Health.Status}}' ${env.APP_NAME} 2>/dev/null || true)",
-                            "if [ \"\$STATUS\" != 'healthy' ]; then echo \"ERROR: Container failed healthcheck. Status: \$STATUS\"; docker logs ${env.APP_NAME} || true; exit 1; fi",
-                            "curl -s -f http://localhost:8501/_stcore/health",
+                            "echo 'Validating pulled image integrity before stopping current container...'",
+                            "docker image inspect ${env.ECR_REGISTRY}/${env.ECR_REPO}:${env.IMAGE_TAG} >/dev/null",
+                            "if docker inspect ${env.APP_NAME} >/dev/null 2>&1; then echo 'Stopping and preserving current container as staged backup...'; if ! docker stop ${env.APP_NAME}; then echo 'ERROR: Failed to stop current container for backup.'; exit 1; fi; if ! docker rename ${env.APP_NAME} ${env.APP_NAME}-newbackup; then echo 'ERROR: Failed to rename current container to staged backup. Restarting container...'; docker start ${env.APP_NAME} || true; exit 1; fi; BACKUP_PRESERVED=1; echo 'Current container safely preserved as ${env.APP_NAME}-newbackup.'; if docker inspect ${env.APP_NAME}-backup >/dev/null 2>&1; then echo 'Removing superseded older backup container...'; if ! docker rm -f ${env.APP_NAME}-backup; then echo 'ERROR: Failed to remove old backup container. Staged backup remains preserved.'; rollback; exit 1; fi; fi; if ! docker rename ${env.APP_NAME}-newbackup ${env.APP_NAME}-backup; then echo 'ERROR: Failed to promote staged backup to primary backup.'; rollback; exit 1; fi; echo 'Current container promoted to ${env.APP_NAME}-backup.'; elif docker inspect ${env.APP_NAME}-backup >/dev/null 2>&1; then echo 'Existing primary backup found from previous deployment; retaining as recovery target.'; BACKUP_PRESERVED=1; elif docker inspect ${env.APP_NAME}-newbackup >/dev/null 2>&1; then echo 'Existing staged backup found from previous deployment; retaining as recovery target.'; BACKUP_PRESERVED=1; else echo 'No existing container found to preserve; proceeding with initial deployment.'; BACKUP_PRESERVED=0; fi",
+                            "echo 'Starting replacement container...'",
+                            "if ! docker run -d --name ${env.APP_NAME} --restart unless-stopped -p 8501:8501 -v /var/data/energy:/app/data -e ENERGY_DB_DIR=/app/data -e ENERGY_DB_PATH=/app/data/energy.db ${env.ECR_REGISTRY}/${env.ECR_REPO}:${env.IMAGE_TAG}; then echo 'ERROR: Failed to launch replacement container.'; rollback; exit 1; fi",
+                            "echo 'Awaiting Docker container health check...'",
+                            "i=1; HEALTHY=0; while [ \"\$i\" -le 30 ]; do STATUS=\$(docker inspect --format='{{.State.Health.Status}}' ${env.APP_NAME} 2>/dev/null || echo 'starting'); if [ \"\$STATUS\" = 'healthy' ]; then echo \"Container is healthy after \$i attempts\"; HEALTHY=1; break; fi; sleep 2; i=\$((i + 1)); done",
+                            "if [ \"\$HEALTHY\" -ne 1 ]; then echo \"ERROR: Replacement container failed Docker health check (status: \$STATUS). Dumping logs and rolling back...\"; docker logs ${env.APP_NAME} || true; rollback; exit 1; fi",
+                            "echo 'Verifying final local HTTP health check against http://localhost:8501/_stcore/health...'",
+                            "HTTP_OK=0; for h in \$(seq 1 5); do if curl -s -f --max-time 5 http://localhost:8501/_stcore/health >/dev/null 2>&1; then HTTP_OK=1; echo \"Local HTTP health check passed on attempt \$h.\"; break; fi; sleep 2; done",
+                            "if [ \"\$HTTP_OK\" -ne 1 ]; then echo 'ERROR: Final local HTTP health check failed. Dumping logs and rolling back...'; docker logs ${env.APP_NAME} || true; rollback; exit 1; fi",
+                            "echo 'Replacement container passed health checks. Executing finalization verification...'",
                             "docker inspect --format='Image: {{.Config.Image}} | ImageID: {{.Image}} | Status: {{.State.Status}} | Health: {{.State.Health.Status}}' ${env.APP_NAME}",
-                            "ls -la /var/data/energy"
+                            "ls -la /var/data/energy",
+                            "DEPLOY_SUCCESS=1",
+                            "BACKUP_PRESERVED=0",
+                            "echo 'Finalization verified. Cleaning up backup container(s)...'",
+                            "if docker inspect ${env.APP_NAME}-newbackup >/dev/null 2>&1; then docker rm -f ${env.APP_NAME}-newbackup || echo 'WARNING: Failed to remove staged backup container.'; fi",
+                            "if docker inspect ${env.APP_NAME}-backup >/dev/null 2>&1; then docker rm -f ${env.APP_NAME}-backup || echo 'WARNING: Failed to remove backup container.'; fi",
+                            "echo 'Deployment finalized successfully.'"
                         ]
                         def ssmParamsJson = groovy.json.JsonOutput.toJson([commands: ssmCommands])
 
@@ -506,7 +604,7 @@ pipeline {
 
                                     echo "SSM Command dispatched: ${CMD_ID}. Awaiting execution..."
                                     sleep 10
-                                    for i in $(seq 1 15); do
+                                    for i in $(seq 1 35); do
                                         STATUS=$(docker run --rm -v "C:/Users/Vishwajeet/.aws:/root/.aws" -e AWS_REGION="${AWS_REGION}" amazon/aws-cli ssm get-command-invocation \
                                             --command-id "${CMD_ID}" \
                                             --instance-id "${EC2_INSTANCE_ID}" \
@@ -523,7 +621,7 @@ pipeline {
                                             exit 1
                                         fi
                                         echo "SSM execution status: $STATUS (waiting...)"
-                                        sleep 4
+                                        sleep 5
                                     done
 
                                     if [ "$STATUS" != "Success" ]; then
@@ -552,7 +650,7 @@ pipeline {
 
                                     Write-Host "SSM Command dispatched: $cmdId. Awaiting execution..."
                                     Start-Sleep -Seconds 10
-                                    for ($i = 1; $i -le 15; $i++) {
+                                    for ($i = 1; $i -le 35; $i++) {
                                         $status = docker run --rm -v "${env:USERPROFILE}\\.aws:/root/.aws" -e AWS_REGION="${env:AWS_REGION}" amazon/aws-cli ssm get-command-invocation `
                                             --command-id "$cmdId" `
                                             --instance-id "${env:EC2_INSTANCE_ID}" `
@@ -568,7 +666,7 @@ pipeline {
                                                 --instance-id "${env:EC2_INSTANCE_ID}"
                                             exit 1
                                         }
-                                        Start-Sleep -Seconds 4
+                                        Start-Sleep -Seconds 5
                                     }
 
                                     if ($status -ne "Success") {
@@ -609,6 +707,9 @@ pipeline {
                 echo "========================================================================"
                 echo "                      PIPELINE EXECUTION SUMMARY                        "
                 echo "========================================================================"
+                echo " Target Deployment Region: ${env.AWS_REGION ?: 'UNKNOWN'} (${env.EC2_INSTANCE_ID ?: 'N/A'})"
+                echo " Target Application URL:  ${env.APP_URL ?: 'N/A'}"
+                echo " ------------------------------------------------------------------------"
                 echo " 1. Source Checkout:      ${env.STAGE_CHECKOUT_STATUS ?: 'NOT_RUN'}"
                 echo " 2. Automated Tests & QA: ${env.STAGE_TESTS_STATUS ?: 'NOT_RUN'}"
                 echo " 3. Security & Quality:   ${env.STAGE_SECURITY_STATUS ?: 'NOT_RUN'}"
