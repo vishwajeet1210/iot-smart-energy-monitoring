@@ -156,3 +156,20 @@ variable "enable_https" {
   description = "Whether to configure an HTTPS listener on port 443 and redirect HTTP (port 80) to HTTPS. Requires domain_name plus either certificate_arn or route53_zone_id."
   default     = false
 }
+
+variable "enable_alb_access_logs" {
+  type        = bool
+  description = "Enable ALB access logging when alb_access_logs_bucket is supplied. Disabled by default to preserve the current deployment until an approved logging bucket is configured."
+  default     = false
+}
+
+variable "alb_access_logs_bucket" {
+  type        = string
+  description = "Existing S3 bucket name for ALB access logs. Required when enable_alb_access_logs is true."
+  default     = ""
+
+  validation {
+    condition     = !var.enable_alb_access_logs || length(trimspace(var.alb_access_logs_bucket)) > 0
+    error_message = "alb_access_logs_bucket must be provided when enable_alb_access_logs is true."
+  }
+}

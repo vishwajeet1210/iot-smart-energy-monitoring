@@ -333,7 +333,7 @@ resource "aws_security_group" "app_sg" {
 resource "aws_ecr_repository" "app_repo" {
   count = var.create_ecr_repository ? 1 : 0
 
-  name                 = var.project_name
+  name = var.project_name
   # CI publishes unique build tags. Immutable tags prevent a previously
   # reviewed artifact from being silently replaced in the private registry.
   image_tag_mutability = "IMMUTABLE"
@@ -555,6 +555,11 @@ resource "aws_lb" "app_alb" {
   security_groups            = [aws_security_group.alb_sg.id]
   subnets                    = [aws_subnet.public_a.id, aws_subnet.public_b.id]
   drop_invalid_header_fields = true
+
+  access_logs {
+    enabled = var.enable_alb_access_logs
+    bucket  = var.alb_access_logs_bucket
+  }
 
   tags = {
     Name = "${var.project_name}-mumbai-alb"
