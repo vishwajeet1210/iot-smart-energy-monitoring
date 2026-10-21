@@ -424,12 +424,12 @@ exit $LASTEXITCODE''', returnStatus: true)
                         echo "🔑 PUBLISH_TO_ECR=true. Authenticating and pushing to Amazon ECR (${env.ECR_REGISTRY})..."
                         try {
                             if (isUnix()) {
-                                sh """
+                                sh '''
                                     docker run --rm -v "C:/Users/Vishwajeet/.aws:/root/.aws" amazon/aws-cli ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
                                     docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
                                     docker push ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
                                     docker logout ${ECR_REGISTRY}
-                                """
+                                '''
                             } else {
                                 powershell '''
                                     docker run --rm -v "${env:USERPROFILE}/.aws:/root/.aws" amazon/aws-cli ecr get-login-password --region "${env:AWS_REGION}" | docker login --username AWS --password-stdin "${env:ECR_REGISTRY}"
@@ -452,23 +452,23 @@ exit $LASTEXITCODE''', returnStatus: true)
                         echo "🔑 PUBLISH_TO_DOCKERHUB=true. Authenticating via Jenkins credentials ID '${env.DOCKERHUB_CREDENTIALS_ID}'..."
                         withCredentials([usernamePassword(credentialsId: env.DOCKERHUB_CREDENTIALS_ID, usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
                             if (isUnix()) {
-                                sh """
-                                    printf '%s\\n' "\$DH_PASS" | docker login -u "\$DH_USER" --password-stdin
+                                sh '''
+                                    printf '%s\n' "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
                                     docker tag ${IMAGE_NAME}:latest ${DOCKERHUB_REPO}:${IMAGE_TAG}
                                     docker tag ${IMAGE_NAME}:latest ${DOCKERHUB_REPO}:latest
                                     docker push ${DOCKERHUB_REPO}:${IMAGE_TAG}
                                     docker push ${DOCKERHUB_REPO}:latest
                                     docker logout
-                                """
+                                '''
                             } else {
-                                powershell """
-                                    \$env:DH_PASS | docker login -u \$env:DH_USER --password-stdin
+                                powershell '''
+                                    $env:DH_PASS | docker login -u $env:DH_USER --password-stdin
                                     docker tag ${IMAGE_NAME}:latest ${DOCKERHUB_REPO}:${IMAGE_TAG}
                                     docker tag ${IMAGE_NAME}:latest ${DOCKERHUB_REPO}:latest
                                     docker push ${DOCKERHUB_REPO}:${IMAGE_TAG}
                                     docker push ${DOCKERHUB_REPO}:latest
                                     docker logout
-                                """
+                                '''
                             }
                             echo "✅ Docker image published to Docker Hub: ${DOCKERHUB_REPO}:${IMAGE_TAG}"
                         }
@@ -530,23 +530,27 @@ exit $LASTEXITCODE''', returnStatus: true)
                             echo "🏗️ Running containerized Terraform fmt -check, init, and validate (${tfImage})..."
                             try {
                                 if (isUnix()) {
-                                    sh """
-                                        if [ -n "\$JENKINS_HOME" ] && command -v hostname >/dev/null 2>&1 && docker inspect "\$(hostname)" >/dev/null 2>&1; then
-                                            docker run --rm --volumes-from "\$(hostname)" -w "\${PWD}" ${tfImage} fmt -check
-                                            docker run --rm --volumes-from "\$(hostname)" -w "\${PWD}" ${tfImage} init -backend=false
-                                            docker run --rm --volumes-from "\$(hostname)" -w "\${PWD}" ${tfImage} validate
+                                    withEnv(["TF_IMAGE=${tfImage}"]) {
+                                        sh '''
+                                        if [ -n "$JENKINS_HOME" ] && command -v hostname >/dev/null 2>&1 && docker inspect "$(hostname)" >/dev/null 2>&1; then
+                                            docker run --rm --volumes-from "$(hostname)" -w "$PWD" "$TF_IMAGE" fmt -check
+                                            docker run --rm --volumes-from "$(hostname)" -w "$PWD" "$TF_IMAGE" init -backend=false
+                                            docker run --rm --volumes-from "$(hostname)" -w "$PWD" "$TF_IMAGE" validate
                                         else
-                                            docker run --rm -v "\${PWD}:/workspace" -w /workspace ${tfImage} fmt -check
-                                            docker run --rm -v "\${PWD}:/workspace" -w /workspace ${tfImage} init -backend=false
-                                            docker run --rm -v "\${PWD}:/workspace" -w /workspace ${tfImage} validate
+                                            docker run --rm -v "$PWD:/workspace" -w /workspace "$TF_IMAGE" fmt -check
+                                            docker run --rm -v "$PWD:/workspace" -w /workspace "$TF_IMAGE" init -backend=false
+                                            docker run --rm -v "$PWD:/workspace" -w /workspace "$TF_IMAGE" validate
                                         fi
-                                    """
+                                        '''
+                                    }
                                 } else {
-                                    powershell """
-                                        docker run --rm -v "\${PWD}:/workspace" -w /workspace ${tfImage} fmt -check
-                                        docker run --rm -v "\${PWD}:/workspace" -w /workspace ${tfImage} init -backend=false
-                                        docker run --rm -v "\${PWD}:/workspace" -w /workspace ${tfImage} validate
-                                    """
+                                    withEnv(["TF_IMAGE=${tfImage}"]) {
+                                        powershell '''
+                                        docker run --rm -v "$env:PWD:/workspace" -w /workspace "$env:TF_IMAGE" fmt -check
+                                        docker run --rm -v "$env:PWD:/workspace" -w /workspace "$env:TF_IMAGE" init -backend=false
+                                        docker run --rm -v "$env:PWD:/workspace" -w /workspace "$env:TF_IMAGE" validate
+                                        '''
+                                    }
                                 }
                                 env.STAGE_IAC_STATUS = 'PASSED'
                                 echo "✅ Terraform configuration is valid and properly formatted."
