@@ -431,12 +431,12 @@ exit $LASTEXITCODE''', returnStatus: true)
                                     docker logout ${ECR_REGISTRY}
                                 """
                             } else {
-                                powershell """
-                                    docker run --rm -v "\${env:USERPROFILE}\\.aws:/root/.aws" amazon/aws-cli ecr get-login-password --region ${env.AWS_REGION} | docker login --username AWS --password-stdin ${env.ECR_REGISTRY}
-                                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
-                                    docker push ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
-                                    docker logout ${ECR_REGISTRY}
-                                """
+                                powershell '''
+                                    docker run --rm -v "${env:USERPROFILE}\.aws:/root/.aws" amazon/aws-cli ecr get-login-password --region "${env:AWS_REGION}" | docker login --username AWS --password-stdin "${env:ECR_REGISTRY}"
+                                    docker tag "${env:IMAGE_NAME}:${env:IMAGE_TAG}" "${env:ECR_REGISTRY}/${env:ECR_REPO}:${env:IMAGE_TAG}"
+                                    docker push "${env:ECR_REGISTRY}/${env:ECR_REPO}:${env:IMAGE_TAG}"
+                                    docker logout "${env:ECR_REGISTRY}"
+                                '''
                             }
                             echo "✅ Docker image published to Amazon ECR: ${env.ECR_REGISTRY}/${env.ECR_REPO}:${env.IMAGE_TAG}"
                         } catch (Exception e) {
