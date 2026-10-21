@@ -278,11 +278,19 @@ exit $LASTEXITCODE''', returnStatus: true)
                             withCredentials([string(credentialsId: env.SONAR_CREDENTIALS_ID, variable: 'SONAR_TOKEN')]) {
                                 if (isUnix()) {
                                     sh '''
+                                        set +e
                                         if [ -n "$JENKINS_HOME" ] && command -v hostname >/dev/null 2>&1 && docker inspect "$(hostname)" >/dev/null 2>&1; then
-                                            docker run --rm --volumes-from "$(hostname)" -w "${PWD}" -e SONAR_TOKEN sonarsource/sonar-scanner-cli:latest -Dsonar.host.url=https://sonarcloud.io -Dsonar.python.coverage.reportPaths=coverage.xml
+                                            docker run --rm --volumes-from "$(hostname)" -w "${PWD}" -e SONAR_TOKEN sonarsource/sonar-scanner-cli:latest -Dsonar.host.url=https://sonarcloud.io -Dsonar.python.coverage.reportPaths=coverage.xml -Dsonar.scanner.metadataFilePath=sonar-report-task.txt
+                                            scan_status=$?
                                         else
-                                            docker run --rm -v "${PWD}:/usr/src" -w /usr/src -e SONAR_TOKEN sonarsource/sonar-scanner-cli:latest -Dsonar.host.url=https://sonarcloud.io -Dsonar.python.coverage.reportPaths=coverage.xml
+                                            docker run --rm -v "${PWD}:/usr/src" -w /usr/src -e SONAR_TOKEN sonarsource/sonar-scanner-cli:latest -Dsonar.host.url=https://sonarcloud.io -Dsonar.python.coverage.reportPaths=coverage.xml -Dsonar.scanner.metadataFilePath=sonar-report-task.txt
+                                            scan_status=$?
                                         fi
+                                        if [ -f sonar-report-task.txt ]; then
+                                            echo "SonarCloud quality conditions:"
+                                            curl --fail --silent --show-error -u "$SONAR_TOKEN:" "https://sonarcloud.io/api/qualitygates/project_status?projectKey=iot-smart-energy-monitoring" | sed -E 's/"conditions":/\n"conditions":/g'
+                                        fi
+                                        exit ${scan_status:-1}
                                     '''
                                 } else {
                                     powershell '''
