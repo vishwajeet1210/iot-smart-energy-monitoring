@@ -280,10 +280,10 @@ exit $LASTEXITCODE''', returnStatus: true)
                                     sh '''
                                         set +e
                                         if [ -n "$JENKINS_HOME" ] && command -v hostname >/dev/null 2>&1 && docker inspect "$(hostname)" >/dev/null 2>&1; then
-                                            docker run --rm --volumes-from "$(hostname)" -w "${PWD}" -e SONAR_TOKEN sonarsource/sonar-scanner-cli:latest -Dsonar.host.url=https://sonarcloud.io -Dsonar.python.coverage.reportPaths=coverage.xml -Dsonar.scanner.metadataFilePath=sonar-report-task.txt
+                                            docker run --rm --volumes-from "$(hostname)" -w "${PWD}" -e SONAR_TOKEN sonarsource/sonar-scanner-cli:latest -Dsonar.host.url=https://sonarcloud.io -Dsonar.python.coverage.reportPaths=coverage.xml -Dsonar.scanner.metadataFilePath="${PWD}/sonar-report-task.txt"
                                             scan_status=$?
                                         else
-                                            docker run --rm -v "${PWD}:/usr/src" -w /usr/src -e SONAR_TOKEN sonarsource/sonar-scanner-cli:latest -Dsonar.host.url=https://sonarcloud.io -Dsonar.python.coverage.reportPaths=coverage.xml -Dsonar.scanner.metadataFilePath=sonar-report-task.txt
+                                            docker run --rm -v "${PWD}:/usr/src" -w /usr/src -e SONAR_TOKEN sonarsource/sonar-scanner-cli:latest -Dsonar.host.url=https://sonarcloud.io -Dsonar.python.coverage.reportPaths=coverage.xml -Dsonar.scanner.metadataFilePath=/usr/src/sonar-report-task.txt
                                             scan_status=$?
                                         fi
                                         if [ -f sonar-report-task.txt ]; then
