@@ -289,6 +289,8 @@ exit $LASTEXITCODE''', returnStatus: true)
                                         if [ -f sonar-report-task.txt ]; then
                                             echo "SonarCloud quality conditions:"
                                             curl --fail --silent --show-error -u "$SONAR_TOKEN:" "https://sonarcloud.io/api/qualitygates/project_status?projectKey=iot-smart-energy-monitoring"
+                                            echo "SonarCloud open vulnerabilities:"
+                                            curl --fail --silent --show-error -u "$SONAR_TOKEN:" "https://sonarcloud.io/api/issues/search?componentKeys=iot-smart-energy-monitoring&resolved=false&types=VULNERABILITY&ps=100"
                                         fi
                                         exit ${scan_status:-1}
                                     '''
