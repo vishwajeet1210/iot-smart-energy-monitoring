@@ -432,7 +432,7 @@ exit $LASTEXITCODE''', returnStatus: true)
                                 """
                             } else {
                                 powershell '''
-                                    docker run --rm -v "${env:USERPROFILE}\.aws:/root/.aws" amazon/aws-cli ecr get-login-password --region "${env:AWS_REGION}" | docker login --username AWS --password-stdin "${env:ECR_REGISTRY}"
+                                    docker run --rm -v "${env:USERPROFILE}/.aws:/root/.aws" amazon/aws-cli ecr get-login-password --region "${env:AWS_REGION}" | docker login --username AWS --password-stdin "${env:ECR_REGISTRY}"
                                     docker tag "${env:IMAGE_NAME}:${env:IMAGE_TAG}" "${env:ECR_REGISTRY}/${env:ECR_REPO}:${env:IMAGE_TAG}"
                                     docker push "${env:ECR_REGISTRY}/${env:ECR_REPO}:${env:IMAGE_TAG}"
                                     docker logout "${env:ECR_REGISTRY}"
