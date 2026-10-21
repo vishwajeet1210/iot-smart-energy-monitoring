@@ -25,8 +25,8 @@ RUN useradd -m -u 1001 appuser
 WORKDIR /app
 
 # Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir --only-binary :all: -r requirements.txt
+COPY requirements.lock .
+RUN pip install --no-cache-dir --only-binary=:all: --require-hashes -r requirements.lock
 
 # Copy application source code and configuration
 COPY alerts.py analytics.py app.py config.py database.py iot_simulator.py ./

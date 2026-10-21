@@ -33,6 +33,7 @@ from iot_simulator import (
     generate_all_readings,
     generate_historical_data,
     get_all_device_ids,
+    get_device_info,
 )
 from analytics import (
     calculate_total_power_kw,
@@ -99,6 +100,27 @@ class TestIoTSimulator:
         """Requesting a reading for an unknown device should raise ValueError."""
         with pytest.raises(ValueError, match="Unknown device ID"):
             generate_single_reading("DEV-INVALID-999")
+
+    def test_get_device_info_valid(self):
+        """get_device_info should return a copy of device specification."""
+        info = get_device_info("DEV-AC-001")
+        assert info["name"] == "Air Conditioner"
+        assert "voltage_range" in info
+
+    def test_get_device_info_invalid(self):
+        """get_device_info should raise ValueError for non-existent device."""
+        with pytest.raises(ValueError, match="Unknown device ID"):
+            get_device_info("NON_EXISTENT")
+
+    def test_generate_single_reading_warning_status(self, monkeypatch):
+        """Should assign Warning status when power is between 75% and 100% of threshold."""
+        import random
+        # 220V * 5.0A = 1100W (1.1 kW), which is between 0.9 kW (75%) and 1.2 kW (High threshold)
+        monkeypatch.setattr(random, "uniform", lambda a, b: 220.0)
+        monkeypatch.setattr(random, "gauss", lambda mu, sigma: 5.0)
+        reading = generate_single_reading("DEV-AC-001")
+        assert reading["status"] == "Warning"
+
 
     def test_generate_all_readings_count(self):
         """generate_all_readings should produce one reading per device."""
@@ -251,6 +273,16 @@ class TestAlerts:
         assert "Device 0" in alerts[0]["message"]
         assert "1.50" in alerts[0]["message"] or "1.5" in alerts[0]["message"]
 
+    def test_alert_skips_nan_power(self):
+        """check_high_consumption should safely skip rows with NaN or missing power_w."""
+        df = pd.DataFrame([
+            {"device_name": "Ghost", "power_w": float("nan"), "location": "Void"},
+            {"device_name": "AC", "power_w": 1500, "location": "Room"},
+        ])
+        alerts = check_high_consumption(df, threshold_kw=1.2)
+        assert len(alerts) == 1
+        assert alerts[0]["device_name"] == "AC"
+
 
 # ═════════════════════════════════════════════
 # TEST 5: Database Operations
@@ -353,6 +385,21 @@ class TestDatabase:
         assert "power_w" in df.columns
         assert "timestamp" in df.columns
 
+    def test_get_all_readings(self):
+        """get_all_readings should return historical readings with device info."""
+        self.db.insert_reading("DEV-AC-001", 230.0, 6.0, 1380.0, 0.005, "High", "2026-01-01 12:00:00")
+        df = self.db.get_all_readings(limit=10)
+        assert not df.empty
+        assert "device_name" in df.columns
+        assert len(df) == 1
+
+    def test_get_total_energy_kwh(self):
+        """get_total_energy_kwh should sum energy across readings."""
+        assert self.db.get_total_energy_kwh() == 0.0
+        self.db.insert_reading("DEV-AC-001", 230.0, 6.0, 1380.0, 0.005, "High", "2026-01-01 12:00:00")
+        assert self.db.get_total_energy_kwh() == 0.005
+
+
 
 # ═════════════════════════════════════════════
 # TEST 6: Analytics Computations
@@ -417,6 +464,53 @@ class TestAnalytics:
         }
         assert expected_keys.issubset(summary.keys())
 
+    def test_summary_statistics_system_status_levels(self):
+        """Summary should correctly classify Normal, Alert, and Critical system statuses."""
+        all_r = self._sample_readings()
+
+        # 0 High devices -> Normal
+        normal_df = pd.DataFrame({"power_w": [200, 300], "status": ["Normal", "Normal"]})
+        assert get_summary_statistics(normal_df, all_r)["system_status"] == "✅ Normal"
+
+        # 3 High devices -> Critical
+        crit_df = pd.DataFrame({"power_w": [1500, 1600, 1700], "status": ["High", "High", "High"]})
+        assert get_summary_statistics(crit_df, all_r)["system_status"] == "⚠️ Critical"
+
+    def test_format_recording_period_variations(self):
+        """_format_recording_period should format duration correctly across all time spans."""
+        from analytics import _format_recording_period
+        assert _format_recording_period(pd.DataFrame()) == "No data"
+        assert _format_recording_period(pd.DataFrame({"device": ["A"]})) == "No data"
+
+        # Less than 1 minute
+        under_min = pd.DataFrame({"timestamp": ["2026-01-01 10:00:00", "2026-01-01 10:00:20"]})
+        assert _format_recording_period(under_min) == "< 1 min"
+
+        # Minutes (< 60 min)
+        mins = pd.DataFrame({"timestamp": ["2026-01-01 10:00:00", "2026-01-01 10:25:00"]})
+        assert _format_recording_period(mins) == "25 min"
+
+        # Exact hours
+        exact_hours = pd.DataFrame({"timestamp": ["2026-01-01 10:00:00", "2026-01-01 12:00:00"]})
+        assert _format_recording_period(exact_hours) == "2 hr"
+
+        # Hours and minutes
+        hours_mins = pd.DataFrame({"timestamp": ["2026-01-01 10:00:00", "2026-01-01 12:15:00"]})
+        assert _format_recording_period(hours_mins) == "2 hr 15 min"
+
+    def test_analytics_empty_dataframe_handling(self):
+        """Analytics functions should gracefully return empty DataFrames or defaults."""
+        empty = pd.DataFrame()
+        assert calculate_total_power_kw(empty) == 0.0
+        assert calculate_total_energy_kwh(empty) == 0.0
+        assert get_power_over_time(empty).empty
+        assert get_energy_over_time(empty).empty
+        assert get_device_energy_breakdown(empty).empty
+        assert get_device_power_distribution(empty).empty
+
+
+
+
 
 # ═════════════════════════════════════════════
 # TEST 7: Recommendations
@@ -452,6 +546,35 @@ class TestRecommendations:
         recs = generate_recommendations(latest, total_energy_kwh=5.0)
         titles = [r["title"] for r in recs]
         assert any("Solar" in t for t in titles)
+
+    def test_recommendations_multiple_high_and_low(self):
+        """Should provide guidance for multiple high-consumption and idle devices."""
+        df = pd.DataFrame([
+            {"device_name": "Heater", "power_w": 1800, "location": "Bath"},
+            {"device_name": "AC", "power_w": 1600, "location": "Bed"},
+            {"device_name": "NightLight", "power_w": 50, "location": "Hall"},
+        ])
+        recs = generate_recommendations(df, total_energy_kwh=2.0)
+        titles = [r["title"] for r in recs]
+        assert any("Multiple High-Consumption" in t for t in titles)
+        assert any("Turn Off Low-Usage" in t for t in titles)
+
+    def test_recommendations_all_nan_power(self):
+        """generate_recommendations should gracefully handle DataFrames where all power_w values are NaN."""
+        df = pd.DataFrame([
+            {"device_name": "Ghost", "power_w": float("nan"), "location": "Void"},
+        ])
+        recs = generate_recommendations(df, total_energy_kwh=0.1)
+        assert len(recs) > 0  # Still includes base recommendations
+
+    def test_recommendation_helpers_with_empty_dataframe(self):
+        """Individual recommendation helper functions should return None on empty DataFrames."""
+        from alerts import _recommend_top_consumer, _recommend_high_consumption, _recommend_low_usage
+        empty = pd.DataFrame()
+        assert _recommend_top_consumer(empty) is None
+        assert _recommend_high_consumption(empty, threshold_kw=1.2) is None
+        assert _recommend_low_usage(empty) is None
+
 
 
 if __name__ == "__main__":

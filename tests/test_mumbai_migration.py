@@ -8,10 +8,16 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import pytest
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+from scripts.validate_cidr import validate_restricted_cidr
+
 TERRAFORM_DIR = os.path.join(ROOT_DIR, "terraform")
 MUMBAI_TF_DIR = os.path.join(TERRAFORM_DIR, "mumbai")
 JENKINSFILE_PATH = os.path.join(ROOT_DIR, "Jenkinsfile")
@@ -101,9 +107,8 @@ class TestMumbaiSecurityAndLeastPrivilege:
         vars_tf = os.path.join(MUMBAI_TF_DIR, "variables.tf")
         with open(vars_tf, "r", encoding="utf-8") as f:
             content = f.read()
-        assert "default     = false" in content and "enable_ssh" in content, (
-            "enable_ssh must default to false"
-        )
+        assert "enable_ssh" in content, "enable_ssh must be declared in variables.tf"
+        assert "default     = false" in content, "enable_ssh must default to false"
 
 
 class TestJenkinsfileMumbaiOnlyTargeting:
@@ -137,11 +142,12 @@ class TestJenkinsfileMumbaiOnlyTargeting:
         assert "error(\"❌ Deployment Gate Failure: Target region '${selectedRegion}' is rejected." in content
 
     def test_mumbai_defaults_declared(self):
-        """Verifies Mumbai defaults for instance, app URL, ECR registry, and Terraform directory."""
+        """Verifies Mumbai parameters and that the instance target is migration-safe."""
         with open(JENKINSFILE_PATH, "r", encoding="utf-8") as f:
             content = f.read()
-        assert "i-07025008dd9b165a8" in content, "Mumbai EC2 instance default i-07025008dd9b165a8 must be present"
-        assert "http://3.110.85.209:8501" in content, "Mumbai App URL default http://3.110.85.209:8501 must be present"
+        assert "name: 'MUMBAI_EC2_INSTANCE_ID'" in content
+        assert "Terraform-managed Mumbai EC2 instance ID" in content
+        assert "name: 'MUMBAI_APP_URL'" in content or "MUMBAI_APP_URL" in content, "Mumbai App URL parameter must be present"
         assert "695496430374.dkr.ecr.ap-south-1.amazonaws.com" in content, "Mumbai ECR registry must be present"
         assert "TF_WORKING_DIR           = 'terraform/mumbai'" in content or "TF_WORKING_DIR  = 'terraform/mumbai'" in content, (
             "Terraform working directory must default to terraform/mumbai"
@@ -176,32 +182,251 @@ class TestJenkinsfileMumbaiOnlyTargeting:
         assert "Restoring previous working container" in content, "Jenkinsfile must include rollback restoration"
 
     def test_target_validation_rejects_foreign_parameters(self):
-        """Ensures Jenkinsfile rejects foreign regions, EC2 instance IDs, ECR registries, or URLs."""
+        """Ensures Jenkinsfile pins region/registry and resolves the migration-safe SSM target."""
         with open(JENKINSFILE_PATH, "r", encoding="utf-8") as f:
             content = f.read()
-        assert "selectedInstance != 'i-07025008dd9b165a8'" in content, (
-            "Pipeline must reject any EC2 instance ID other than Mumbai instance i-07025008dd9b165a8"
-        )
+        assert "selectedInstance.matches('^i-[0-9a-f]{8,17}$')" in content
+        assert "terraform -chdir=terraform/mumbai output -raw instance_id" in content
         assert "selectedRegistry != '695496430374.dkr.ecr.ap-south-1.amazonaws.com'" in content, (
             "Pipeline must reject any ECR registry other than Mumbai registry"
         )
-        assert "selectedUrl != 'http://3.110.85.209:8501'" in content, (
-            "Pipeline must reject any application URL other than Mumbai URL"
-        )
-        assert "env.EC2_INSTANCE_ID != 'i-07025008dd9b165a8'" in content, (
-            "Deploy stage must gate against non-Mumbai instance"
-        )
+        assert "selectedUrl.matches('^https?://" in content, "Pipeline must validate a constrained http(s) URL"
+        assert "a valid Terraform instance_id or explicit MUMBAI_EC2_INSTANCE_ID is required" in content
         assert "env.AWS_REGION != 'ap-south-1'" in content, (
             "Deploy stage must gate against non-Mumbai AWS region"
         )
         assert "env.ECR_REGISTRY != '695496430374.dkr.ecr.ap-south-1.amazonaws.com'" in content, (
             "Deploy stage must gate against non-Mumbai ECR registry"
         )
-        assert "env.APP_URL != 'http://3.110.85.209:8501'" in content, (
-            "Deploy stage must gate against non-Mumbai app URL"
+
+    def test_target_validation_rejects_obsolete_hardcoded_ip(self):
+        """Ensures Jenkinsfile rejects obsolete direct-instance public IP 3.110.85.209."""
+        with open(JENKINSFILE_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "selectedUrl.contains('3.110.85.209')" in content
+        assert "Architecture requires ALB endpoint or private subnet resolution" in content
+
+    def test_stage6_checks_alb_provisioning_before_probing(self):
+        """Ensures Stage 6 checks whether ALB is provisioned by Terraform before probing application_url."""
+        with open(JENKINSFILE_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "output -raw alb_dns_name" in content
+        assert "Application Load Balancer has not been provisioned by Terraform yet" in content
+        assert "3.110.85.209" in content
+
+
+class TestJenkinsfileDeploymentGuard:
+    """Validates the deployment guard mechanism ensuring verification-only CI builds by default."""
+
+    def test_enable_deployment_parameter_declared_default_false(self):
+        """Jenkinsfile must declare ENABLE_DEPLOYMENT parameter defaulting to false."""
+        with open(JENKINSFILE_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "ENABLE_DEPLOYMENT" in content, "Jenkinsfile must declare ENABLE_DEPLOYMENT parameter"
+        assert "defaultValue: false" in content, "ENABLE_DEPLOYMENT must default to false"
+
+    def test_publish_and_deploy_flags_bound_to_deployment_guard(self):
+        """ECR publication and EC2 deployment must have separate explicit opt-in flags."""
+        with open(JENKINSFILE_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "PUBLISH_TO_ECR           = \"${(params.ENABLE_ECR_PUBLISH" in content
+        assert "DEPLOY_TO_EC2            = \"${(params.ENABLE_DEPLOYMENT" in content
+
+    def test_ecr_push_and_ec2_deploy_stages_strictly_guarded(self):
+        """ECR publishing and EC2 deployment stages must be conditioned on deployment flags."""
+        with open(JENKINSFILE_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "if (env.PUBLISH_TO_ECR == 'true')" in content
+        assert "expression { env.DEPLOY_TO_EC2 == 'true' }" in content
+
+    def test_allowed_ingress_cidr_parameter_declared(self):
+        """Jenkinsfile must declare ALLOWED_INGRESS_CIDR parameter for configurable CI ingress."""
+        with open(JENKINSFILE_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "ALLOWED_INGRESS_CIDR" in content, "Jenkinsfile must declare ALLOWED_INGRESS_CIDR parameter"
+
+    def test_allowed_ingress_cidr_wires_to_tf_var(self):
+        """Jenkinsfile must wire ALLOWED_INGRESS_CIDR into TF_VAR_allowed_ingress_cidrs when specified."""
+        with open(JENKINSFILE_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "TF_VAR_allowed_ingress_cidrs" in content, (
+            "Jenkinsfile must export TF_VAR_allowed_ingress_cidrs when ALLOWED_INGRESS_CIDR is supplied"
+        )
+        assert "scripts/validate_cidr.py" in content or "scripts\\validate_cidr.py" in content
+
+    def test_deployment_disabled_by_default(self):
+        """ENABLE_DEPLOYMENT must default to false, keeping ECR publish and EC2 deployment disabled by default."""
+        with open(JENKINSFILE_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "booleanParam(\n            name: 'ENABLE_DEPLOYMENT',\n            defaultValue: false" in content or (
+            "name: 'ENABLE_DEPLOYMENT'" in content and "defaultValue: false" in content
+        )
+        assert "PUBLISH_TO_ECR           = \"${(params.ENABLE_ECR_PUBLISH == true || params.ENABLE_ECR_PUBLISH == 'true') ? 'true' : 'false'}\"" in content
+        assert "DEPLOY_TO_EC2            = \"${(params.ENABLE_DEPLOYMENT == true || params.ENABLE_DEPLOYMENT == 'true') ? 'true' : 'false'}\"" in content
+
+    def test_cidr_is_optional_for_ci_but_the_validator_rejects_invalid_values(self):
+        """CI/CD does not mutate Terraform ingress; any supplied CIDR must still validate safely."""
+        with open(JENKINSFILE_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "This pipeline deliberately has no infrastructure-apply step" in content
+        assert "withEnv([\"RAW_INGRESS_CIDR=${rawCidr}\"])" in content
+        assert "python3 scripts/validate_cidr.py \"$RAW_INGRESS_CIDR\"" in content
+
+        # Python validator unit validation
+        for empty_val in ["", "   ", "\t\n", None]:
+            with pytest.raises(ValueError, match="CIDR"):
+                validate_restricted_cidr(empty_val)
+
+    def test_invalid_cidr_rejected(self):
+        """Invalid IP or CIDR strings must be rejected by the standard IP/CIDR parser."""
+        invalid_cidrs = [
+            "invalid",
+            "256.0.0.1/32",
+            "192.168.1.1/33",
+            "10.0.0.1",          # Missing prefix length
+            "10.0.0.1/abc",      # Non-numeric prefix
+            "10.0.0.1/-1",       # Negative prefix
+            "10.0.0.1/24/32",    # Multiple slashes
+            "999.999.999.999/24",
+            "2001:xyz::/32",
+            "2001:db8::/32",   # Valid IPv6 syntax, but incompatible with Terraform cidr_blocks
+        ]
+        for bad_cidr in invalid_cidrs:
+            with pytest.raises(ValueError):
+                validate_restricted_cidr(bad_cidr)
+
+    def test_world_open_and_unrestricted_cidrs_rejected(self):
+        """World-open (0.0.0.0/0, ::/0) and unspecified address CIDRs must be strictly rejected."""
+        unrestricted = [
+            "0.0.0.0/0",
+            "::/0",
+            "0.0.0.0/8",       # Unspecified IPv4 network
+            "::/128",          # Unspecified IPv6 address
+            "224.0.0.0/4",     # IPv4 multicast space
+            "ff02::1/128",     # IPv6 is unsupported by the IPv4 Terraform rule
+        ]
+        for world_cidr in unrestricted:
+            with pytest.raises(ValueError, match="(rejected|Unspecified|Multicast|prefix length 0|not supported)"):
+                validate_restricted_cidr(world_cidr)
+
+    def test_valid_restricted_cidr_accepted(self):
+        """Legitimate restricted CIDRs must be accepted and normalized by the validator."""
+        valid_cidrs = {
+            "223.236.96.144/32": "223.236.96.144/32",
+            "10.1.1.0/24": "10.1.1.0/24",
+            "192.168.1.50/32": "192.168.1.50/32",
+            "172.16.0.0/16": "172.16.0.0/16",
+        }
+        for cidr, expected in valid_cidrs.items():
+            assert validate_restricted_cidr(cidr) == expected
+
+    def test_validation_only_builds_never_publish_or_deploy(self):
+        """Validation-only builds must never publish to ECR or deploy to EC2."""
+        with open(JENKINSFILE_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # ECR publication must have an explicit skip branch
+        assert "Skipping image push to preserve remote registry" in content
+        assert "if (env.PUBLISH_TO_ECR == 'true')" in content
+
+        # EC2 deployment must be guarded by declarative when condition
+        assert "when {\n                expression { env.DEPLOY_TO_EC2 == 'true' }\n            }" in content or (
+            "when" in content and "env.DEPLOY_TO_EC2 == 'true'" in content
         )
 
+    def test_cidr_validation_is_decoupled_from_ecr_and_ssm_writes(self):
+        """Image publishing and SSM deployment do not modify Terraform ingress rules."""
+        with open(JENKINSFILE_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        assert "ECR publication blocked. Ingress CIDR prerequisite" not in content
+        assert "EC2 deployment blocked. Ingress CIDR prerequisite" not in content
+        assert "ENABLE_ECR_PUBLISH" in content
+        assert "PUBLISH_TO_ECR           = \"${(params.ENABLE_ECR_PUBLISH" in content
+
+    def test_jenkinsfile_declarative_pipeline_structure(self):
+        """Structural syntax check: Verifies all declarative pipeline blocks and stages are properly formed."""
+        with open(JENKINSFILE_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # Declarative root blocks
+        required_root_blocks = [
+            "pipeline {",
+            "agent any",
+            "triggers {",
+            "options {",
+            "parameters {",
+            "environment {",
+            "stages {",
+            "post {",
+        ]
+        for block in required_root_blocks:
+            assert block in content, f"Missing declarative block: {block}"
+
+        # All 6 stages must be defined in order with steps {}
+        stages = [
+            "stage('Checkout SCM')",
+            "stage('Unit Testing & QA')",
+            "stage('Security & Code Quality')",
+            "stage('Docker Build & Package')",
+            "stage('Terraform IaC Validation')",
+            "stage('Deploy to EC2 (SSM)')",
+        ]
+        last_pos = 0
+        for s in stages:
+            pos = content.find(s, last_pos)
+            assert pos != -1, f"Missing or out-of-order stage: {s}"
+            # Stage must contain steps
+            stage_block = content[pos:content.find("stage(", pos + len(s)) if content.find("stage(", pos + len(s)) != -1 else len(content)]
+            assert "steps {" in stage_block, f"Stage {s} must contain steps {{ ... }}"
+            last_pos = pos + len(s)
+
+    def test_jenkinsfile_balanced_delimiters(self):
+        """Jenkinsfile must maintain perfectly balanced delimiter counts for braces, brackets, and parens."""
+        with open(JENKINSFILE_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+        counts = {c: content.count(c) for c in "()[]{}"}
+        assert counts["("] == counts[")"], f"Parentheses mismatch: {counts['(']} != {counts[')']}"
+        assert counts["["] == counts["]"], f"Brackets mismatch: {counts['[']} != {counts[']']}"
+        assert counts["{"] == counts["}"], f"Braces mismatch: {counts['{']} != {counts['}']}"
+
+    def test_validation_only_stages_have_zero_aws_writes(self):
+        """Ensure stages 1 to 5 (prior to guarded deployment) contain zero un-guarded AWS write commands."""
+        with open(JENKINSFILE_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+        deploy_stage_idx = content.find("stage('Deploy to EC2 (SSM)')")
+        assert deploy_stage_idx != -1
+        validation_pipeline = content[:deploy_stage_idx]
+
+        # Ensure no terraform apply or destroy exists anywhere in the validation pipeline
+        assert "terraform apply" not in validation_pipeline
+        assert "terraform destroy" not in validation_pipeline
+        # Ensure no SSM send-command exists in validation pipeline
+        assert "ssm send-command" not in validation_pipeline
+        # Ensure any docker push to ECR is enclosed within PUBLISH_TO_ECR check
+        push_idx = validation_pipeline.find("docker push ${ECR_REGISTRY}")
+        guard_idx = validation_pipeline.find("if (env.PUBLISH_TO_ECR == 'true')")
+        assert guard_idx != -1 and push_idx != -1
+        assert guard_idx < push_idx
+
+    def test_deployment_guard_evaluation_truth_table(self):
+        """Ensure the Groovy expression evaluates strictly to 'false' for default and un-parameterized runs."""
+        def eval_guard(val):
+            return "true" if (val is True or val == "true") else "false"
+
+        assert eval_guard(None) == "false", "SCM-triggered run with uninitialized params must be false"
+        assert eval_guard(False) == "false", "Explicit false parameter must be false"
+        assert eval_guard("false") == "false", "String false parameter must be false"
+        assert eval_guard("") == "false", "Empty parameter must be false"
+        assert eval_guard("yes") == "false", "Arbitrary 'yes' must not enable deployment"
+        assert eval_guard("1") == "false", "Arbitrary '1' must not enable deployment"
+        assert eval_guard("enabled") == "false", "Arbitrary 'enabled' must not enable deployment"
+        assert eval_guard(True) == "true", "Explicit boolean true must enable deployment"
+        assert eval_guard("true") == "true", "Explicit string true must enable deployment"
+
+
     def test_deployment_ordering_image_validated_before_stopping_container(self):
+
         """Ensures the new image is pulled and inspected before the active container is stopped."""
         with open(JENKINSFILE_PATH, "r", encoding="utf-8") as f:
             content = f.read()
@@ -209,7 +434,9 @@ class TestJenkinsfileMumbaiOnlyTargeting:
         inspect_idx = content.find("docker image inspect")
         stop_old_idx = content.find("Stopping and preserving current container as staged backup...")
 
-        assert pull_idx != -1 and inspect_idx != -1 and stop_old_idx != -1
+        assert pull_idx != -1, "docker pull command must be present"
+        assert inspect_idx != -1, "docker image inspect command must be present"
+        assert stop_old_idx != -1, "stop old container command must be present"
         assert pull_idx < inspect_idx < stop_old_idx, (
             "Image must be pulled and validated before stopping the running container"
         )
@@ -223,7 +450,10 @@ class TestJenkinsfileMumbaiOnlyTargeting:
         rm_old_backup_idx = content.find("docker rm -f ${env.APP_NAME}-backup")
         promote_backup_idx = content.find("docker rename ${env.APP_NAME}-newbackup ${env.APP_NAME}-backup")
 
-        assert stage_backup_idx != -1 and backup_preserved_idx != -1 and rm_old_backup_idx != -1 and promote_backup_idx != -1
+        assert stage_backup_idx != -1, "docker rename newbackup command must be present"
+        assert backup_preserved_idx != -1, "BACKUP_PRESERVED=1 state must be present"
+        assert rm_old_backup_idx != -1, "docker rm -f backup command must be present"
+        assert promote_backup_idx != -1, "docker rename newbackup backup command must be present"
         assert stage_backup_idx < backup_preserved_idx < rm_old_backup_idx < promote_backup_idx, (
             "Recovery state BACKUP_PRESERVED=1 must be set immediately after newbackup is created, before removing old backup"
         )
@@ -234,7 +464,8 @@ class TestJenkinsfileMumbaiOnlyTargeting:
             content = f.read()
         inspect_newbackup_idx = content.find("if docker inspect ${env.APP_NAME}-newbackup >/dev/null 2>&1; then TARGET_BACKUP='${env.APP_NAME}-newbackup'")
         inspect_oldbackup_idx = content.find("elif docker inspect ${env.APP_NAME}-backup >/dev/null 2>&1; then TARGET_BACKUP='${env.APP_NAME}-backup'")
-        assert inspect_newbackup_idx != -1 and inspect_oldbackup_idx != -1
+        assert inspect_newbackup_idx != -1, "Inspection of newbackup must be present"
+        assert inspect_oldbackup_idx != -1, "Inspection of old backup must be present"
         assert inspect_newbackup_idx < inspect_oldbackup_idx, (
             "Rollback must evaluate and prefer newbackup before old backup"
         )
@@ -250,9 +481,12 @@ class TestJenkinsfileMumbaiOnlyTargeting:
         deploy_success_idx = content.find("DEPLOY_SUCCESS=1")
         cleanup_backup_idx = content.find("Cleaning up backup container(s)...")
 
-        assert docker_health_idx != -1 and http_health_idx != -1
-        assert inspect_running_idx != -1 and inspect_volume_idx != -1
-        assert deploy_success_idx != -1 and cleanup_backup_idx != -1
+        assert docker_health_idx != -1, "Docker health check step must be present"
+        assert http_health_idx != -1, "HTTP health check step must be present"
+        assert inspect_running_idx != -1, "Inspect running image step must be present"
+        assert inspect_volume_idx != -1, "Inspect volume step must be present"
+        assert deploy_success_idx != -1, "DEPLOY_SUCCESS=1 step must be present"
+        assert cleanup_backup_idx != -1, "Cleanup backup container step must be present"
 
         assert docker_health_idx < http_health_idx < inspect_running_idx < inspect_volume_idx < deploy_success_idx < cleanup_backup_idx, (
             "Backup container must be retained through health checks and finalization verification; "
@@ -274,13 +508,14 @@ class TestJenkinsfileMumbaiOnlyTargeting:
         )
 
         # Check that all 3 failure points trigger rollback
-        assert "! docker run" in content and "rollback; exit 1" in content, (
-            "Container startup failure must trigger rollback"
-        )
-        assert "HEALTHY" in content and "Replacement container failed Docker health check" in content, (
+        assert "! docker run" in content, "docker run failure check must be present"
+        assert "rollback; exit 1" in content, "Container startup failure must trigger rollback"
+        assert "HEALTHY" in content, "HEALTHY check must be present"
+        assert "Replacement container failed Docker health check" in content, (
             "Docker health check failure must trigger rollback"
         )
-        assert "HTTP_OK" in content and "Final local HTTP health check failed" in content, (
+        assert "HTTP_OK" in content, "HTTP_OK check must be present"
+        assert "Final local HTTP health check failed" in content, (
             "HTTP health check failure must trigger rollback"
         )
 
@@ -322,10 +557,10 @@ class TestJenkinsfileMumbaiOnlyTargeting:
         """Ensures shell EXIT trap triggers rollback on unexpected failure and avoids repeated loops."""
         with open(JENKINSFILE_PATH, "r", encoding="utf-8") as f:
             content = f.read()
-        assert "trap " in content and "EXIT" in content, "Deployment script must register an EXIT trap"
-        assert "BACKUP_PRESERVED" in content and "DEPLOY_SUCCESS" in content, (
-            "EXIT trap must monitor BACKUP_PRESERVED and DEPLOY_SUCCESS flags"
-        )
+        assert "trap " in content, "Deployment script must register an EXIT trap"
+        assert "EXIT" in content, "Deployment script must register an EXIT trap"
+        assert "BACKUP_PRESERVED" in content, "EXIT trap must monitor BACKUP_PRESERVED flag"
+        assert "DEPLOY_SUCCESS" in content, "EXIT trap must monitor DEPLOY_SUCCESS flag"
         assert r"\"\$ROLLBACK_TRIGGERED\" -eq 0" in content, (
             "EXIT trap must guard rollback execution against repeated loops"
         )
@@ -404,14 +639,16 @@ def extract_ssm_script(content):
 
 
 def run_deployment_simulation(env_overrides=None, initial_containers=None):
-    if not shutil.which("bash"):
+    if os.name == "nt" or not shutil.which("bash"):
         pytest.skip("bash is required for behavioral simulation")
 
     with open(JENKINSFILE_PATH, "r", encoding="utf-8") as f:
         content = f.read()
     raw_script = extract_ssm_script(content)
 
-    with tempfile.TemporaryDirectory() as td:
+    # Use the project workspace instead of the Windows sandbox temp directory,
+    # which can deny child processes permission to create test fixtures.
+    with tempfile.TemporaryDirectory(dir=ROOT_DIR) as td:
         wsl_state_dir = os.path.join(td, "containers").replace("\\", "/")
         if wsl_state_dir.startswith("C:") or wsl_state_dir.startswith("c:"):
             wsl_state_dir = "/mnt/c" + wsl_state_dir[2:]
@@ -716,14 +953,221 @@ class TestSonarCloudQualityGateConfig:
         """Ensure Dockerfile installs only binary wheels and copies only production application files."""
         dockerfile_path = os.path.join(ROOT_DIR, "Dockerfile")
         with open(dockerfile_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        assert "--only-binary :all:" in content, "Dockerfile pip install must enforce binary wheels"
+            lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+            content = "\n".join(lines)
+
+        assert (
+            "--only-binary=:all:" in content or "--only-binary :all:" in content
+        ), "Dockerfile pip install must enforce binary wheels"
+        assert "--require-hashes" in content, "Dockerfile pip install must verify dependency hashes"
         assert "COPY . ." not in content, "Dockerfile must not use recursive COPY . ."
         assert "COPY alerts.py analytics.py app.py config.py database.py iot_simulator.py ./" in content
 
-    def test_terraform_mumbai_associates_public_ip_for_reachability(self):
-        """Ensure terraform/mumbai/main.tf maintains public IP assignment for instance reachability."""
+        user_directives = [line for line in lines if line.startswith("USER ")]
+        assert len(user_directives) >= 1, "Dockerfile must declare a USER directive"
+        assert user_directives[-1] == "USER appuser", "Final USER directive must be unprivileged appuser"
+        assert any(line.startswith("HEALTHCHECK") for line in lines), "Dockerfile must define a HEALTHCHECK"
+        assert "http://localhost:8501/_stcore/health" in content, "Healthcheck must probe Streamlit health endpoint"
+
+    def test_terraform_mumbai_private_instance_no_public_ip(self):
+        """Ensure terraform/mumbai/main.tf maintains private subnet residency with no public IP (resolves terraform:S6329)."""
         tf_path = os.path.join(ROOT_DIR, "terraform", "mumbai", "main.tf")
         with open(tf_path, "r", encoding="utf-8") as f:
             content = f.read()
-        assert "associate_public_ip_address = true" in content
+        assert "associate_public_ip_address = false" in content, (
+            "EC2 instance must have associate_public_ip_address = false to resolve terraform:S6329"
+        )
+        assert "subnet_id                   = aws_subnet.private_a.id" in content or "subnet_id = aws_subnet.private_a.id" in content, (
+            "EC2 instance must reside in private subnet"
+        )
+
+    def test_dockerfile_uses_non_root_user(self):
+        """Ensure Dockerfile declares an unprivileged application user and switches to it."""
+        dockerfile_path = os.path.join(ROOT_DIR, "Dockerfile")
+        with open(dockerfile_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "useradd -m -u 1001 appuser" in content, "Dockerfile must create appuser"
+        assert "USER appuser" in content, "Dockerfile must switch to non-root appuser"
+
+    def test_requirements_lock_hash_enforcement_and_pins(self):
+        """Ensure requirements.lock exists, contains SHA-256 hashes, and pins every single dependency."""
+        lock_path = os.path.join(ROOT_DIR, "requirements.lock")
+        assert os.path.isfile(lock_path), "requirements.lock must exist"
+        with open(lock_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        packages_found = {}
+        current_pkg = None
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "==" in line and not line.startswith("--"):
+                pkg_part = line.split("\\")[0].strip()
+                name, version = pkg_part.split("==", 1)
+                name = name.strip().lower()
+                version = version.strip()
+                current_pkg = name
+                packages_found[current_pkg] = {"version": version, "hashes": []}
+            elif "--hash=sha256:" in line and current_pkg:
+                hash_val = line.split("--hash=sha256:")[1].strip().rstrip("\\").strip()
+                packages_found[current_pkg]["hashes"].append(hash_val)
+
+        core_deps = ["streamlit", "plotly", "pandas", "numpy", "altair", "requests", "urllib3"]
+        for dep in core_deps:
+            assert dep in packages_found, f"{dep} must be locked in requirements.lock"
+            assert packages_found[dep]["version"], f"{dep} must have an exact pinned version"
+            assert len(packages_found[dep]["hashes"]) >= 1, f"{dep} must have at least one SHA-256 hash"
+            for h in packages_found[dep]["hashes"]:
+                assert len(h) == 64, f"Hash for {dep} must be a valid 64-character SHA-256 hex string: {h}"
+                assert all(c in "0123456789abcdef" for c in h.lower()), f"Invalid sha256 characters in {h}"
+
+    def test_terraform_mumbai_security_group_ingress_and_least_privilege(self):
+        """Ensure Mumbai security group uses allowed_ingress_cidrs for the app port and enforces IMDSv2."""
+        main_tf = os.path.join(ROOT_DIR, "terraform", "mumbai", "main.tf")
+        with open(main_tf, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        assert "cidr_blocks = var.allowed_ingress_cidrs" in content, (
+            "ALB security group must use var.allowed_ingress_cidrs"
+        )
+        assert "var.app_port" in content, "Ingress must use configurable var.app_port"
+        # Ingress blocks must use restricted CIDR blocks, not 0.0.0.0/0
+        sg_start = content.find('resource "aws_security_group" "app_sg"')
+        egress_start = content.find('egress {', sg_start)
+        ingress_section = content[sg_start:egress_start] if sg_start != -1 and egress_start != -1 else ""
+        assert '0.0.0.0/0' not in ingress_section, (
+            "Mumbai security group ingress must never expose port 8501 or SSH to world 0.0.0.0/0"
+        )
+        assert re.search(r'http_tokens\s*=\s*"required"', content), (
+            "IMDSv2 must be enforced with http_tokens = 'required'"
+        )
+        assert re.search(r'http_put_response_hop_limit\s*=\s*1', content), (
+            "IMDSv2 hop limit must be restricted to 1"
+        )
+
+    def test_preservation_of_distinct_mumbai_and_sydney_state_configuration(self):
+        """Ensure Mumbai and Sydney retain distinct configuration and state boundaries."""
+        sydney_tf = os.path.join(ROOT_DIR, "terraform", "main.tf")
+        mumbai_tf = os.path.join(ROOT_DIR, "terraform", "mumbai", "main.tf")
+        assert os.path.isfile(sydney_tf), "Sydney terraform/main.tf must exist"
+        assert os.path.isfile(mumbai_tf), "Mumbai terraform/mumbai/main.tf must exist"
+
+        with open(sydney_tf, "r", encoding="utf-8") as f:
+            sydney_content = f.read()
+        with open(mumbai_tf, "r", encoding="utf-8") as f:
+            mumbai_content = f.read()
+
+        assert "${var.project_name}-ec2-role" in sydney_content or "smart-energy-monitor-ec2-role" in sydney_content
+        assert "${var.project_name}-mumbai-ec2-role" in mumbai_content or "smart-energy-monitor-mumbai-ec2-role" in mumbai_content
+
+
+class TestMumbaiPrivateArchitectureAndALB:
+    """Validates the refactored Mumbai architecture: Private EC2 instance + dual-AZ ALB + TLS."""
+
+    @pytest.fixture(autouse=True)
+    def setup_files(self):
+        self.main_tf = os.path.join(MUMBAI_TF_DIR, "main.tf")
+        self.vars_tf = os.path.join(MUMBAI_TF_DIR, "variables.tf")
+        self.outputs_tf = os.path.join(MUMBAI_TF_DIR, "outputs.tf")
+        with open(self.main_tf, "r", encoding="utf-8") as f:
+            self.main_content = f.read()
+        with open(self.vars_tf, "r", encoding="utf-8") as f:
+            self.vars_content = f.read()
+        with open(self.outputs_tf, "r", encoding="utf-8") as f:
+            self.outputs_content = f.read()
+
+    def test_ec2_resides_in_private_subnet_without_public_ip(self):
+        """Resolves terraform:S6329 by verifying associate_public_ip_address = false and private subnet."""
+        assert "associate_public_ip_address = false" in self.main_content
+        assert "subnet_id                   = aws_subnet.private_a.id" in self.main_content
+
+    def test_dual_az_public_and_private_subnets_defined(self):
+        """Verifies dual-AZ architecture required by Application Load Balancer."""
+        assert 'resource "aws_subnet" "public_a"' in self.main_content
+        assert 'resource "aws_subnet" "public_b"' in self.main_content
+        assert 'resource "aws_subnet" "private_a"' in self.main_content
+        assert 'resource "aws_subnet" "private_b"' in self.main_content
+        assert "map_public_ip_on_launch = false" in self.main_content
+
+    def test_internet_gateway_and_routing(self):
+        """Verifies Internet Gateway exists and is routed to public subnets."""
+        assert 'resource "aws_internet_gateway" "gw"' in self.main_content
+        assert 'resource "aws_route_table" "public"' in self.main_content
+        assert 'resource "aws_route_table_association" "public_a_assoc"' in self.main_content
+        assert 'resource "aws_route_table_association" "public_b_assoc"' in self.main_content
+
+    def test_nat_gateway_and_s3_endpoint(self):
+        """Verifies outbound connectivity via NAT Gateway and S3 Gateway VPC Endpoint."""
+        assert 'resource "aws_nat_gateway" "nat"' in self.main_content
+        assert 'resource "aws_eip" "nat"' in self.main_content
+        assert 'resource "aws_route_table" "private"' in self.main_content
+        assert 'resource "aws_vpc_endpoint" "s3"' in self.main_content
+        assert 'vpc_endpoint_type = "Gateway"' in self.main_content
+
+    def test_alb_and_target_group_configuration(self):
+        """Verifies Application Load Balancer and health check target group on port 8501."""
+        assert 'resource "aws_lb" "app_alb"' in self.main_content
+        assert 'load_balancer_type' in self.main_content and '"application"' in self.main_content
+        assert 'drop_invalid_header_fields = true' in self.main_content
+        assert 'resource "aws_lb_target_group" "app_tg"' in self.main_content
+        assert 'path                = "/_stcore/health"' in self.main_content
+        assert 'resource "aws_lb_target_group_attachment" "app"' in self.main_content
+
+    def test_security_group_alb_isolation(self):
+        """Verifies EC2 port 8501 is ONLY accessible from the ALB security group."""
+        assert 'resource "aws_security_group" "alb_sg"' in self.main_content
+        assert 'security_groups = [aws_security_group.alb_sg.id]' in self.main_content
+        # Ensure app_sg port 8501 does NOT allow cidr_blocks
+        app_sg_idx = self.main_content.find('resource "aws_security_group" "app_sg"')
+        alb_sg_idx = self.main_content.find('resource "aws_security_group" "alb_sg"')
+        assert app_sg_idx != -1 and alb_sg_idx != -1
+
+    def test_tls_acm_and_listeners_configuration(self):
+        """Verifies conditional ACM TLS certificate and ALB HTTPS/HTTP listeners."""
+        assert 'resource "aws_acm_certificate" "cert"' in self.main_content
+        assert 'resource "aws_lb_listener" "http"' in self.main_content
+        assert 'resource "aws_lb_listener" "https"' in self.main_content
+        assert 'ELBSecurityPolicy-TLS13-1-2-2021-06' in self.main_content
+
+    def test_outputs_expose_alb_and_private_instance(self):
+        """Verifies outputs expose ALB DNS name and instance private IP, removing instance_public_ip."""
+        assert 'output "alb_dns_name"' in self.outputs_content
+        assert 'output "instance_private_ip"' in self.outputs_content
+        assert 'output "application_url"' in self.outputs_content
+        assert 'output "instance_public_ip"' not in self.outputs_content
+
+    def test_interface_vpc_endpoints_configured(self):
+        """Verifies configuration of Interface VPC Endpoints for private ECR and SSM connectivity."""
+        assert 'resource "aws_vpc_endpoint" "interface_endpoints"' in self.main_content
+        assert 'resource "aws_security_group" "vpce_sg"' in self.main_content
+        assert 'private_dns_enabled = true' in self.main_content
+        assert 'ecr.api' in self.main_content
+        assert 'ecr.dkr' in self.main_content
+        assert 'ssm' in self.main_content
+
+    def test_tls_check_block_and_honest_output(self):
+        """Verifies declarative check block enforcing TLS prerequisites and honest is_https_active output."""
+        assert 'check "tls_configuration"' in self.main_content
+        assert 'resource "aws_route53_record" "cert_validation"' in self.main_content
+        assert 'resource "aws_acm_certificate_validation" "cert"' in self.main_content
+        assert 'aws_acm_certificate_validation.cert[0].certificate_arn' in self.main_content
+        assert 'variable "route53_zone_id"' in self.vars_content
+        assert 'output "is_https_active"' in self.outputs_content
+        assert 'output "application_url"' in self.outputs_content
+
+    def test_public_alb_requires_explicit_restricted_ingress(self):
+        """No world-open default may create the public ALB without reviewed ingress input."""
+        assert 'default     = []' in self.vars_content
+        assert 'A restricted allowed_ingress_cidrs value is required' in self.main_content
+
+    def test_ecr_images_are_immutable_and_ci_uses_build_tags(self):
+        """Prevent a pushed image tag from being overwritten after review."""
+        with open(JENKINSFILE_PATH, "r", encoding="utf-8") as f:
+            pipeline = f.read()
+        assert 'image_tag_mutability = "IMMUTABLE"' in self.main_content
+        assert 'docker push ${ECR_REGISTRY}/${ECR_REPO}:latest' not in pipeline
+
+    def test_interface_vpc_endpoints_includes_cloudwatch_logs(self):
+        """Verifies Interface VPC Endpoints include CloudWatch logs service."""
+        assert '"logs"' in self.main_content

@@ -34,18 +34,33 @@ pipeline {
         )
         string(
             name: 'MUMBAI_EC2_INSTANCE_ID',
-            defaultValue: 'i-07025008dd9b165a8',
-            description: 'Target EC2 Instance ID in Mumbai (ap-south-1)'
+            defaultValue: '',
+            description: 'Optional expected Terraform-managed Mumbai EC2 instance ID. The SSM target is resolved from terraform/mumbai state to support the approved private-instance migration.'
         )
         string(
             name: 'MUMBAI_APP_URL',
-            defaultValue: 'http://3.110.85.209:8501',
-            description: 'Public Application URL for Mumbai (ap-south-1)'
+            defaultValue: '',
+            description: 'Optional Application URL (ALB DNS or HTTPS domain) for Mumbai (ap-south-1). If omitted, dynamically queried from Terraform outputs or verified deployment target.'
         )
         string(
             name: 'MUMBAI_ECR_REGISTRY',
             defaultValue: '695496430374.dkr.ecr.ap-south-1.amazonaws.com',
             description: 'Amazon ECR Registry URI for Mumbai (ap-south-1)'
+        )
+        booleanParam(
+            name: 'ENABLE_DEPLOYMENT',
+            defaultValue: false,
+            description: 'Enable deployment to the Terraform-managed Mumbai EC2 instance via SSM. Defaults to false for safe verification-only runs.'
+        )
+        booleanParam(
+            name: 'ENABLE_ECR_PUBLISH',
+            defaultValue: false,
+            description: 'Enable publishing the built image to the verified Mumbai ECR repository. This never changes Terraform ingress rules.'
+        )
+        string(
+            name: 'ALLOWED_INGRESS_CIDR',
+            defaultValue: '',
+            description: 'Optional restricted IPv4 CIDR for a reviewed Mumbai Terraform plan (e.g., 203.0.113.50/32). A public-ALB plan has no permissive default and requires an explicit value.'
         )
     }
 
@@ -59,16 +74,16 @@ pipeline {
         AWS_REGION               = 'ap-south-1'
         ECR_REGISTRY             = '695496430374.dkr.ecr.ap-south-1.amazonaws.com'
         ECR_REPO                 = 'smart-energy-monitor'
-        EC2_INSTANCE_ID          = 'i-07025008dd9b165a8'
-        APP_URL                  = 'http://3.110.85.209:8501'
+        EC2_INSTANCE_ID          = ''
+        APP_URL                  = ''
         TF_WORKING_DIR           = 'terraform/mumbai'
 
         // Pipeline Behavior Flags
         REQUIRE_SECURITY_SCANS   = 'false' // Set to 'true' to fail build if security tools are missing
         ENFORCE_QUALITY_GATE     = 'true'  // Set to 'true' to fail build if SonarCloud quality gate fails
         REQUIRE_IAC_VALIDATION   = 'false' // Set to 'true' to fail build if terraform is missing
-        PUBLISH_TO_ECR           = 'true'  // Push image to Amazon ECR
-        DEPLOY_TO_EC2            = 'true'  // Deploy image to AWS EC2 via AWS Systems Manager
+        PUBLISH_TO_ECR           = "${(params.ENABLE_ECR_PUBLISH == true || params.ENABLE_ECR_PUBLISH == 'true') ? 'true' : 'false'}"
+        DEPLOY_TO_EC2            = "${(params.ENABLE_DEPLOYMENT == true || params.ENABLE_DEPLOYMENT == 'true') ? 'true' : 'false'}"
 
         // SonarCloud Credential ID (Secret text in Jenkins)
         SONAR_CREDENTIALS_ID     = 'sonarcloud-token'
@@ -105,9 +120,9 @@ pipeline {
                     }
 
                     // Strict Target Validation: Prevent parameter tampering or redirection
-                    def selectedInstance = (params.MUMBAI_EC2_INSTANCE_ID?.trim()) ?: 'i-07025008dd9b165a8'
-                    if (selectedInstance != 'i-07025008dd9b165a8') {
-                        error("❌ Deployment Gate Failure: Target EC2 instance '${selectedInstance}' is rejected. Expected verified Mumbai EC2 instance 'i-07025008dd9b165a8'.")
+                    def selectedInstance = (params.MUMBAI_EC2_INSTANCE_ID?.trim()) ?: ''
+                    if (selectedInstance && !selectedInstance.matches('^i-[0-9a-f]{8,17}$')) {
+                        error("❌ Deployment Gate Failure: MUMBAI_EC2_INSTANCE_ID must be a valid EC2 instance ID when supplied. The actual SSM target is resolved from Terraform state.")
                     }
 
                     def selectedRegistry = (params.MUMBAI_ECR_REGISTRY?.trim()) ?: '695496430374.dkr.ecr.ap-south-1.amazonaws.com'
@@ -115,29 +130,69 @@ pipeline {
                         error("❌ Deployment Gate Failure: Target ECR registry '${selectedRegistry}' is rejected. Expected verified Mumbai ECR registry '695496430374.dkr.ecr.ap-south-1.amazonaws.com'.")
                     }
 
-                    def selectedUrl = (params.MUMBAI_APP_URL?.trim()) ?: 'http://3.110.85.209:8501'
-                    if (selectedUrl != 'http://3.110.85.209:8501') {
-                        error("❌ Deployment Gate Failure: Target application URL '${selectedUrl}' is rejected. Expected verified Mumbai application URL 'http://3.110.85.209:8501'.")
+                    def selectedUrl = (params.MUMBAI_APP_URL?.trim()) ?: ''
+                    if (selectedUrl) {
+                        if (!selectedUrl.matches('^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[^\\s]*)?$')) {
+                            error("❌ Deployment Gate Failure: Target application URL must be a plain http(s) URL with a hostname, optional port, and no shell-control characters.")
+                        }
+                        if (selectedUrl.contains('3.110.85.209')) {
+                            error("❌ Deployment Gate Failure: Target application URL cannot be obsolete hardcoded IP '3.110.85.209'. Architecture requires ALB endpoint or private subnet resolution.")
+                        }
                     }
 
                     // Configure verified Mumbai environment settings
                     env.AWS_REGION      = 'ap-south-1'
                     env.ECR_REGISTRY    = '695496430374.dkr.ecr.ap-south-1.amazonaws.com'
                     env.ECR_REPO        = 'smart-energy-monitor'
-                    env.EC2_INSTANCE_ID = 'i-07025008dd9b165a8'
-                    env.APP_URL         = 'http://3.110.85.209:8501'
+                    env.EC2_INSTANCE_ID = selectedInstance
+                    env.APP_URL         = selectedUrl
                     env.TF_WORKING_DIR  = 'terraform/mumbai'
 
                     echo "📍 Target Region: AWS Mumbai (ap-south-1) [MANDATORY & EXCLUSIVE]"
                     echo "📦 Target ECR Registry: ${env.ECR_REGISTRY}"
                     echo "🏷️ Target ECR Repository: ${env.ECR_REPO}"
                     echo "🏗️ Target Terraform Directory: ${env.TF_WORKING_DIR}"
-                    echo "🖥️ Target EC2 Instance ID: ${env.EC2_INSTANCE_ID}"
-                    echo "🌐 Target Application URL: ${env.APP_URL}"
+                    echo "🖥️ Target EC2 Instance ID: ${env.EC2_INSTANCE_ID ?: '(Resolved from Terraform only when deployment is enabled)'}"
+                    echo "🌐 Target Application URL: ${env.APP_URL ?: '(Dynamic from ALB/Terraform outputs)'}"
                 }
                 echo "📥 Pulling latest source code from GitHub repository..."
                 checkout scm
                 script {
+                    def rawCidr = (params.ALLOWED_INGRESS_CIDR ?: '').trim()
+
+                    // This pipeline deliberately has no infrastructure-apply step. CIDR input is therefore optional
+                    // for CI/CD, but any supplied value is normalized safely for a reviewed plan.
+                    if (rawCidr) {
+                        if (rawCidr =~ /[\r\n]/) {
+                            error("❌ Deployment Security Gate Failure: ALLOWED_INGRESS_CIDR contains unsupported control characters.")
+                        }
+                        echo "🔒 Validating supplied restricted ingress CIDR with standard parser..."
+                        def cidrExit = -1
+                        def validatedCidr = ''
+                        withEnv(["RAW_INGRESS_CIDR=${rawCidr}"]) {
+                            if (isUnix()) {
+                                cidrExit = sh(script: '''python3 scripts/validate_cidr.py "$RAW_INGRESS_CIDR" > .validated_cidr 2>&1''', returnStatus: true)
+                                if (cidrExit == 0) {
+                                    validatedCidr = readFile('.validated_cidr').trim()
+                                }
+                            } else {
+                                cidrExit = powershell(script: '''& python scripts/validate_cidr.py $env:RAW_INGRESS_CIDR *> .validated_cidr
+exit $LASTEXITCODE''', returnStatus: true)
+                                if (cidrExit == 0) {
+                                    validatedCidr = readFile('.validated_cidr').trim()
+                                }
+                            }
+                        }
+
+                        if (cidrExit != 0 || !validatedCidr) {
+                            def errorDetail = fileExists('.validated_cidr') ? readFile('.validated_cidr').trim() : 'Parser execution failed'
+                            error("❌ Deployment Security Gate Failure: Ingress CIDR '${rawCidr}' failed security validation: ${errorDetail}")
+                        }
+
+                        env.TF_VAR_allowed_ingress_cidrs = "[\"${validatedCidr}\"]"
+                        echo "✅ Supplied ingress CIDR was normalized for a reviewed Terraform plan."
+                    }
+
                     env.STAGE_CHECKOUT_STATUS = 'PASSED'
                 }
             }
@@ -372,18 +427,14 @@ pipeline {
                                 sh """
                                     docker run --rm -v "C:/Users/Vishwajeet/.aws:/root/.aws" amazon/aws-cli ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
                                     docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
-                                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${ECR_REGISTRY}/${ECR_REPO}:latest
                                     docker push ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
-                                    docker push ${ECR_REGISTRY}/${ECR_REPO}:latest
                                     docker logout ${ECR_REGISTRY}
                                 """
                             } else {
                                 powershell """
                                     docker run --rm -v "\${env:USERPROFILE}\\.aws:/root/.aws" amazon/aws-cli ecr get-login-password --region ${env.AWS_REGION} | docker login --username AWS --password-stdin ${env.ECR_REGISTRY}
                                     docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
-                                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${ECR_REGISTRY}/${ECR_REPO}:latest
                                     docker push ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
-                                    docker push ${ECR_REGISTRY}/${ECR_REPO}:latest
                                     docker logout ${ECR_REGISTRY}
                                 """
                             }
@@ -392,6 +443,8 @@ pipeline {
                             echo "[ERROR] Failed to publish image to Amazon ECR: ${e.getMessage()}"
                             throw e
                         }
+                    } else {
+                        echo "[INFO] Amazon ECR publishing disabled (PUBLISH_TO_ECR=false). Skipping image push to preserve remote registry."
                     }
 
                     // Optional Docker Hub publishing (strictly credential-based, zero secrets in command text)
@@ -554,15 +607,33 @@ pipeline {
                     if (env.AWS_REGION != 'ap-south-1') {
                         error("❌ Deployment Gate Failure: Target AWS_REGION is '${env.AWS_REGION}'. Only AWS Mumbai ('ap-south-1') is permitted.")
                     }
-                    if (!env.EC2_INSTANCE_ID || env.EC2_INSTANCE_ID != 'i-07025008dd9b165a8') {
-                        error("❌ Deployment Gate Failure: Target EC2_INSTANCE_ID is '${env.EC2_INSTANCE_ID}'. Expected verified Mumbai EC2 instance 'i-07025008dd9b165a8'.")
-                    }
                     if (env.ECR_REGISTRY != '695496430374.dkr.ecr.ap-south-1.amazonaws.com') {
                         error("❌ Deployment Gate Failure: Target ECR_REGISTRY is '${env.ECR_REGISTRY}'. Expected verified Mumbai ECR registry '695496430374.dkr.ecr.ap-south-1.amazonaws.com'.")
                     }
-                    if (env.APP_URL != 'http://3.110.85.209:8501') {
-                        error("❌ Deployment Gate Failure: Target APP_URL is '${env.APP_URL}'. Expected verified Mumbai application URL 'http://3.110.85.209:8501'.")
+                    if (env.APP_URL && !env.APP_URL.startsWith('http://') && !env.APP_URL.startsWith('https://')) {
+                        error("❌ Deployment Gate Failure: Target APP_URL '${env.APP_URL}' is invalid. Protocol must be http:// or https://.")
                     }
+                    def managedInstanceId = ''
+                    try {
+                        if (isUnix()) {
+                            managedInstanceId = sh(script: 'terraform -chdir=terraform/mumbai output -raw instance_id', returnStdout: true).trim()
+                        } else {
+                            managedInstanceId = powershell(script: 'terraform -chdir=terraform/mumbai output -raw instance_id', returnStdout: true).trim()
+                        }
+                    } catch (Exception e) {
+                        echo "ℹ️ Terraform state is unavailable in this Jenkins workspace; an explicit MUMBAI_EC2_INSTANCE_ID is required for this deployment."
+                    }
+                    if (env.EC2_INSTANCE_ID && managedInstanceId && env.EC2_INSTANCE_ID != managedInstanceId) {
+                        error("❌ Deployment Gate Failure: supplied MUMBAI_EC2_INSTANCE_ID does not match Terraform-managed instance '${managedInstanceId}'.")
+                    }
+                    if (managedInstanceId && !managedInstanceId.matches('^i-[0-9a-f]{8,17}$')) {
+                        error("❌ Deployment Gate Failure: Terraform output 'instance_id' is invalid. Refusing to dispatch SSM to an unverified target.")
+                    }
+                    env.EC2_INSTANCE_ID = managedInstanceId ?: env.EC2_INSTANCE_ID
+                    if (!env.EC2_INSTANCE_ID || !env.EC2_INSTANCE_ID.matches('^i-[0-9a-f]{8,17}$')) {
+                        error("❌ Deployment Gate Failure: a valid Terraform instance_id or explicit MUMBAI_EC2_INSTANCE_ID is required before SSM dispatch.")
+                    }
+                    echo "✅ Resolved Mumbai SSM target: ${env.EC2_INSTANCE_ID}"
                     echo "🚀 Deploying updated container to EC2 instance '${env.EC2_INSTANCE_ID}' in Mumbai ('${env.AWS_REGION}') via AWS Systems Manager..."
                     try {
                         def ssmCommands = [
@@ -642,8 +713,27 @@ pipeline {
                                         exit 1
                                     fi
 
-                                    echo "Verifying external HTTP health endpoint: ${APP_URL}/_stcore/health..."
-                                    python3 -c "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('${APP_URL}/_stcore/health', timeout=10).getcode() == 200 else 1)"
+                                    if [ -z "${APP_URL}" ] && command -v terraform >/dev/null 2>&1; then
+                                        ALB_DNS=$(terraform -chdir="${TF_WORKING_DIR}" output -raw alb_dns_name 2>/dev/null || true)
+                                        if [ -n "${ALB_DNS}" ] && [ "${ALB_DNS}" != "null" ] && ! echo "${ALB_DNS}" | grep -qi "error"; then
+                                            CANDIDATE_URL=$(terraform -chdir="${TF_WORKING_DIR}" output -raw application_url 2>/dev/null || true)
+                                            if [ -n "${CANDIDATE_URL}" ] && ! echo "${CANDIDATE_URL}" | grep -q "3.110.85.209"; then
+                                                APP_URL="${CANDIDATE_URL}"
+                                            else
+                                                echo "⚠️ Stale direct EC2 public IP output (3.110.85.209) ignored. External verification requires provisioned ALB."
+                                                APP_URL=""
+                                            fi
+                                        else
+                                            echo "ℹ️ Application Load Balancer has not been provisioned by Terraform yet. Skipping external ALB verification."
+                                            APP_URL=""
+                                        fi
+                                    fi
+                                    if [ -n "${APP_URL}" ] && [ "${APP_URL}" != "null" ] && ! echo "${APP_URL}" | grep -q "3.110.85.209"; then
+                                        echo "Verifying external ALB health endpoint: ${APP_URL}/_stcore/health..."
+                                        python3 -c 'import os, sys, urllib.request; url = os.environ["APP_URL"].rstrip("/") + "/_stcore/health"; sys.exit(0 if urllib.request.urlopen(url, timeout=10).getcode() == 200 else 1)'
+                                    else
+                                        echo "ℹ️ External URL verification skipped (ALB not provisioned or application URL not set; local container health verified via SSM)."
+                                    fi
                                 '''
                             }
                         } else {
@@ -684,13 +774,32 @@ pipeline {
                                         exit 1
                                     }
 
-                                    Write-Host "Verifying external HTTP health endpoint: ${env:APP_URL}/_stcore/health..."
-                                    curl.exe -s -f --connect-timeout 10 "${env:APP_URL}/_stcore/health"
+                                    if (-not $env:APP_URL -and (Get-Command terraform -ErrorAction SilentlyContinue)) {
+                                        $albDns = (terraform -chdir="$env:TF_WORKING_DIR" output -raw alb_dns_name 2>$null)
+                                        if ($albDns -and $albDns.Trim() -ne "" -and $albDns.Trim() -ne "null" -and -not ($albDns -match "Error")) {
+                                            $candidateUrl = (terraform -chdir="$env:TF_WORKING_DIR" output -raw application_url 2>$null).Trim()
+                                            if ($candidateUrl -and -not ($candidateUrl -match "3\.110\.85\.209")) {
+                                                $env:APP_URL = $candidateUrl
+                                            } else {
+                                                Write-Host "⚠️ Stale direct EC2 public IP output ignored. External verification requires provisioned ALB."
+                                                $env:APP_URL = ""
+                                            }
+                                        } else {
+                                            Write-Host "ℹ️ Application Load Balancer has not been provisioned by Terraform yet. Skipping external ALB verification."
+                                            $env:APP_URL = ""
+                                        }
+                                    }
+                                    if ($env:APP_URL -and $env:APP_URL -ne "null" -and -not ($env:APP_URL -match "3\.110\.85\.209")) {
+                                        Write-Host "Verifying external ALB health endpoint: ${env:APP_URL}/_stcore/health..."
+                                        curl.exe -s -f --connect-timeout 10 "${env:APP_URL}/_stcore/health"
+                                    } else {
+                                        Write-Host "ℹ️ External URL verification skipped (ALB not provisioned or application URL not set; local container health verified via SSM)."
+                                    }
                                 '''
                             }
                         }
                         env.STAGE_DEPLOY_STATUS = 'PASSED'
-                        echo "✅ Application successfully deployed and verified on EC2: ${env.APP_URL}"
+                        echo "✅ Application successfully deployed and verified on EC2 (Target: ${env.APP_URL ?: 'local container verified'})."
                     } catch (Exception e) {
                         env.STAGE_DEPLOY_STATUS = 'FAILED'
                         echo "[ERROR] Deployment to EC2 failed: ${e.getMessage()}"

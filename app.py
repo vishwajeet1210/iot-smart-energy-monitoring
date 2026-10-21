@@ -749,7 +749,7 @@ elif page == "📈 Analytics":
                     x=alert_threshold,
                     line_dash="dash",
                     line_color="#EF4444",
-                    annotation_text=f"Threshold",
+                    annotation_text="Threshold",
                     annotation_font_color="#EF4444",
                 )
                 st.plotly_chart(fig, use_container_width=True)

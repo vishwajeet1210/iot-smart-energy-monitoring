@@ -102,6 +102,61 @@ _BASE_RECOMMENDATIONS = [
 ]
 
 
+def _recommend_top_consumer(valid: pd.DataFrame) -> dict | None:
+    """Recommend reduction for the single highest power consumer."""
+    if valid.empty:
+        return None
+    top_device = valid.loc[valid["power_w"].idxmax()]
+    top_name = top_device.get("device_name", "Unknown")
+    top_power_kw = top_device["power_w"] / 1000
+    return {
+        "icon": "🔴",
+        "title": f"Reduce {top_name} Usage",
+        "detail": (
+            f"{top_name} is your highest consumer at {top_power_kw:.2f} kW. "
+            f"Consider reducing its operating time or switching to a more efficient model."
+        ),
+    }
+
+
+def _recommend_high_consumption(valid: pd.DataFrame, threshold_kw: float) -> dict | None:
+    """Recommend actions if multiple devices exceed high-consumption threshold."""
+    if valid.empty:
+        return None
+    high_devices = valid[valid["power_w"] / 1000 >= threshold_kw]
+    if len(high_devices) <= 1:
+        return None
+    names = ", ".join(high_devices["device_name"].tolist())
+    return {
+        "icon": "⚠️",
+        "title": "Multiple High-Consumption Devices",
+        "detail": (
+            f"{len(high_devices)} devices exceed the {threshold_kw} kW threshold: {names}. "
+            f"Avoid running them simultaneously to reduce peak load."
+        ),
+    }
+
+
+def _recommend_low_usage(valid: pd.DataFrame) -> dict | None:
+    """Recommend turning off devices consuming negligible power."""
+    if valid.empty:
+        return None
+    low_devices = valid[valid["power_w"] / 1000 < 0.1]
+    if low_devices.empty:
+        return None
+    names = ", ".join(low_devices["device_name"].tolist())
+    verb = "is" if len(low_devices) == 1 else "are"
+    pronoun = "it" if len(low_devices) == 1 else "them"
+    return {
+        "icon": "🔋",
+        "title": "Turn Off Low-Usage Devices",
+        "detail": (
+            f"{names} {verb} consuming very little power. "
+            f"Consider turning {pronoun} off if not needed."
+        ),
+    }
+
+
 def generate_recommendations(
     latest_readings: pd.DataFrame,
     total_energy_kwh: float = 0.0,
@@ -126,49 +181,14 @@ def generate_recommendations(
     recommendations = []
 
     if not latest_readings.empty and "power_w" in latest_readings.columns:
-        # Filter out rows with no readings
         valid = latest_readings.dropna(subset=["power_w"])
-
-        if not valid.empty:
-            # ── Highest consumer ──
-            top_device = valid.loc[valid["power_w"].idxmax()]
-            top_name = top_device.get("device_name", "Unknown")
-            top_power_kw = top_device["power_w"] / 1000
-
-            recommendations.append({
-                "icon": "🔴",
-                "title": f"Reduce {top_name} Usage",
-                "detail": (
-                    f"{top_name} is your highest consumer at {top_power_kw:.2f} kW. "
-                    f"Consider reducing its operating time or switching to a more efficient model."
-                ),
-            })
-
-            # ── Devices exceeding threshold ──
-            high_devices = valid[valid["power_w"] / 1000 >= threshold_kw]
-            if len(high_devices) > 1:
-                names = ", ".join(high_devices["device_name"].tolist())
-                recommendations.append({
-                    "icon": "⚠️",
-                    "title": "Multiple High-Consumption Devices",
-                    "detail": (
-                        f"{len(high_devices)} devices exceed the {threshold_kw} kW threshold: {names}. "
-                        f"Avoid running them simultaneously to reduce peak load."
-                    ),
-                })
-
-            # ── Low-consumption devices that are on ──
-            low_devices = valid[valid["power_w"] / 1000 < 0.1]
-            if not low_devices.empty:
-                names = ", ".join(low_devices["device_name"].tolist())
-                recommendations.append({
-                    "icon": "🔋",
-                    "title": "Turn Off Low-Usage Devices",
-                    "detail": (
-                        f"{names} {'is' if len(low_devices) == 1 else 'are'} consuming very little power. "
-                        f"Consider turning {'it' if len(low_devices) == 1 else 'them'} off if not needed."
-                    ),
-                })
+        for rec in [
+            _recommend_top_consumer(valid),
+            _recommend_high_consumption(valid, threshold_kw),
+            _recommend_low_usage(valid),
+        ]:
+            if rec:
+                recommendations.append(rec)
 
     # ── Cost-saving tip if energy is significant ──
     if total_energy_kwh > 0.5:
