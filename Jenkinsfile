@@ -778,7 +778,7 @@ exit $LASTEXITCODE''', returnStatus: true)
                                         $albDns = (terraform -chdir="$env:TF_WORKING_DIR" output -raw alb_dns_name 2>$null)
                                         if ($albDns -and $albDns.Trim() -ne "" -and $albDns.Trim() -ne "null" -and -not ($albDns -match "Error")) {
                                             $candidateUrl = (terraform -chdir="$env:TF_WORKING_DIR" output -raw application_url 2>$null).Trim()
-                                            if ($candidateUrl -and -not ($candidateUrl -match "3\.110\.85\.209")) {
+                                            if ($candidateUrl -and -not ($candidateUrl -match "3[.]110[.]85[.]209")) {
                                                 $env:APP_URL = $candidateUrl
                                             } else {
                                                 Write-Host "⚠️ Stale direct EC2 public IP output ignored. External verification requires provisioned ALB."
@@ -789,7 +789,7 @@ exit $LASTEXITCODE''', returnStatus: true)
                                             $env:APP_URL = ""
                                         }
                                     }
-                                    if ($env:APP_URL -and $env:APP_URL -ne "null" -and -not ($env:APP_URL -match "3\.110\.85\.209")) {
+                                    if ($env:APP_URL -and $env:APP_URL -ne "null" -and -not ($env:APP_URL -match "3[.]110[.]85[.]209")) {
                                         Write-Host "Verifying external ALB health endpoint: ${env:APP_URL}/_stcore/health..."
                                         curl.exe -s -f --connect-timeout 10 "${env:APP_URL}/_stcore/health"
                                     } else {
